@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gt-extract"
+version = "0.1.0"
+description = "Extract per-contig GT arrays from remote Zarr-ZIP archives over HTTPS."
+requires-python = ">=3.10"
+dependencies = [
+    "fsspec>=2023.1",
+    "requests",
+    "urllib3",
+    "zarr>=2.14,<3",
+    "aiohttp",
+    "numcodecs",
+]
+
+[tool.setuptools.packages.find]
+include = ["gt_extract"]
+
+[project.scripts]
+gt-extract = "gt_extract.__main__:main"

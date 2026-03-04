@@ -1,5 +1,5 @@
 """
-gt_extract — GT extraction from remote Zarr-ZIP archives.
+gt_extract - GT-only extraction from remote Zarr-ZIP archives.
 
 Public API:
 
