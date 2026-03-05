@@ -18,8 +18,16 @@ import json
 import shutil
 import time
 from pathlib import Path
+from typing import Any
 
-from gt_extract._setup import NonRetryableError, log, make_run_id, utc_now_iso
+from gt_extract._setup import (
+    NonRetryableError,
+    install_signal_handler,
+    log,
+    make_run_id,
+    shutdown_requested,
+    utc_now_iso,
+)
 from gt_extract.types import Config, Sample, SampleResult, RunSummary
 from gt_extract.input import load_samples_tsv, open_remote_zipfs, preflight_range_support
 from gt_extract.discovery import build_gt_member_index, discover_root_and_contigs
@@ -81,6 +89,8 @@ def extract_sample_attempt(sample: Sample, cfg: Config, run_id: str) -> tuple[st
         mkdir_cache: set[Path] = set()
 
         for contig in contigs:
+            if shutdown_requested():
+                raise KeyboardInterrupt("shutdown requested")
             members = members_by_contig[contig]
             stats = copy_members_fast(zipfs, members, internal_root, tmp_dir, mkdir_cache)
             mb = stats.bytes_read_spans / (1024 * 1024)
@@ -111,7 +121,7 @@ def extract_sample_attempt(sample: Sample, cfg: Config, run_id: str) -> tuple[st
         tmp_dir.rename(final_dir)
 
         return "completed", contigs
-    except Exception as exc:
+    except (Exception, KeyboardInterrupt) as exc:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
@@ -133,6 +143,15 @@ def process_sample_with_retries(sample: Sample, cfg: Config, run_id: str) -> Sam
     log(f"SAMPLE START {sample.sample_id}")
     attempts = cfg.retries + 1
     for attempt_idx in range(attempts):
+        if shutdown_requested():
+            log(f"SAMPLE CANCELLED {sample.sample_id} (shutdown requested before attempt {attempt_idx + 1})")
+            return SampleResult(
+                sample_id=sample.sample_id,
+                status="cancelled",
+                contigs=[],
+                error=None,
+                elapsed_s=time.perf_counter() - time.perf_counter(),
+            )
         if attempt_idx > 0:
             sleep_s = _backoff_sleep_s(attempt_idx - 1)
             log(f"{sample.sample_id} retrying attempt {attempt_idx + 1}/{attempts} after {sleep_s:.1f}s")
@@ -183,7 +202,7 @@ def run_pipeline(cfg: Config) -> RunSummary:
     """Run the full extraction pipeline.
 
     Loads samples from the TSV, downloads them in parallel, and returns
-    a summary of what happened.
+    a summary of what happened. Supports clean shutdown via Ctrl+C.
 
     Args:
         cfg: all the settings (input file, output dir, workers, etc.)
@@ -191,6 +210,7 @@ def run_pipeline(cfg: Config) -> RunSummary:
     Returns:
         RunSummary with per-sample results and overall counts.
     """
+    install_signal_handler()
     run_id = make_run_id()
     started = time.perf_counter()
 
@@ -210,25 +230,75 @@ def run_pipeline(cfg: Config) -> RunSummary:
             completed=0,
             skipped=0,
             failed=0,
+            cancelled=0,
             elapsed_s=time.perf_counter() - started,
         )
 
     log(f"RUN START run_id={run_id} samples={len(samples)} workers={cfg.workers} retries={cfg.retries}")
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
     results: list[SampleResult] = []
+    submitted_samples: dict[Any, Sample] = {}  # future -> Sample
     with ThreadPoolExecutor(max_workers=cfg.workers) as ex:
-        futs = [ex.submit(process_sample_with_retries, s, cfg, run_id) for s in samples]
-        for fut in as_completed(futs):
-            results.append(fut.result())
+        futs = set()
+        for s in samples:
+            fut = ex.submit(process_sample_with_retries, s, cfg, run_id)
+            futs.add(fut)
+            submitted_samples[fut] = s
+
+        # Poll with a timeout so the main thread can respond to Ctrl+C.
+        remaining = set(futs)
+        while remaining:
+            if shutdown_requested():
+                for pending in remaining:
+                    pending.cancel()
+                break
+
+            done, remaining = wait(remaining, timeout=1.0, return_when=FIRST_COMPLETED)
+            for fut in done:
+                try:
+                    results.append(fut.result())
+                except KeyboardInterrupt:
+                    results.append(SampleResult(
+                        sample_id=submitted_samples[fut].sample_id,
+                        status="cancelled",
+                        contigs=[],
+                        error="interrupted by Ctrl+C",
+                        elapsed_s=0.0,
+                    ))
+
+    # Any submitted sample not yet in results is cancelled.
+    collected_ids = {r.sample_id for r in results}
+    for fut, sample in submitted_samples.items():
+        if sample.sample_id not in collected_ids:
+            results.append(SampleResult(
+                sample_id=sample.sample_id,
+                status="cancelled",
+                contigs=[],
+                error=None,
+                elapsed_s=0.0,
+            ))
+
+    # Clean up any leftover temp dirs after shutdown.
+    if shutdown_requested():
+        out = Path(cfg.output_dir)
+        if out.exists():
+            for p in out.glob("*.zarr.__tmp__*"):
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                    log(f"Cleaned up {p.name}")
 
     completed = sum(1 for r in results if r.status == "completed")
     skipped = sum(1 for r in results if r.status == "skipped")
     failed_count = sum(1 for r in results if r.status == "failed")
+    cancelled_count = sum(1 for r in results if r.status == "cancelled")
 
     elapsed = time.perf_counter() - started
-    log(f"RUN SUMMARY completed={completed} skipped={skipped} failed={failed_count} elapsed={elapsed:.1f}s")
+    log(
+        f"RUN SUMMARY completed={completed} skipped={skipped} "
+        f"failed={failed_count} cancelled={cancelled_count} elapsed={elapsed:.1f}s"
+    )
 
     return RunSummary(
         run_id=run_id,
@@ -236,5 +306,6 @@ def run_pipeline(cfg: Config) -> RunSummary:
         completed=completed,
         skipped=skipped,
         failed=failed_count,
+        cancelled=cancelled_count,
         elapsed_s=elapsed,
     )

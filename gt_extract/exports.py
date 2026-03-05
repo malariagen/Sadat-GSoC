@@ -50,7 +50,8 @@ def format_run_summary(summary: RunSummary) -> str:
     """
     lines: list[str] = []
     lines.append(
-        f"run_id={summary.run_id} completed={summary.completed} skipped={summary.skipped} failed={summary.failed} elapsed_s={summary.elapsed_s:.1f}"
+        f"run_id={summary.run_id} completed={summary.completed} skipped={summary.skipped} "
+        f"failed={summary.failed} cancelled={summary.cancelled} elapsed_s={summary.elapsed_s:.1f}"
     )
     for r in summary.results:
         contigs = ",".join(r.contigs) if r.contigs else "-"

@@ -80,10 +80,15 @@ def main(argv: list[str] | None = None) -> int:
         kwargs["workers"] = args.workers
 
     cfg = Config(**kwargs)
-    summary = run_pipeline(cfg)
+    try:
+        summary = run_pipeline(cfg)
+    except KeyboardInterrupt:
+        print("\nAborted.", file=sys.stderr)
+        return 130
     print(format_run_summary(summary))
     return 1 if summary.failed > 0 else 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
+

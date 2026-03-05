@@ -70,7 +70,7 @@ class SampleResult:
     """
 
     sample_id: str
-    status: str  # completed | skipped | failed
+    status: str  # completed | skipped | failed | cancelled
     contigs: list[str]
     error: str | None
     elapsed_s: float
@@ -86,6 +86,7 @@ class RunSummary:
         completed : how many samples succeeded
         skipped   : how many were already done and skipped
         failed    : how many failed
+        cancelled : how many were cancelled by Ctrl+C
         elapsed_s : total time in seconds
     """
 
@@ -94,4 +95,5 @@ class RunSummary:
     completed: int
     skipped: int
     failed: int
-    elapsed_s: float
+    cancelled: int = 0
+    elapsed_s: float = 0.0
