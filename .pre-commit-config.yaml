@@ -1,0 +1,28 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format --check --force-exclude
+        language: system
+        types_or: [python, pyi]
+
+      - id: basedpyright
+        name: basedpyright
+        entry: basedpyright
+        language: system
+        pass_filenames: false
+        types_or: [python, pyi]
+
+      - id: numpydoc
+        name: numpydoc
+        entry: numpydoc lint --config . src/fastq_classifier/fetch_first_n.py src/fastq_classifier/extract_features.py src/fastq_classifier/build_matrix.py src/fastq_classifier/evaluate_classifier.py src/fastq_classifier/cli.py
+        language: system
+        pass_filenames: false
+        types_or: [python, pyi]
