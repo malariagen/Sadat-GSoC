@@ -1,280 +1,150 @@
-"""Console entry points for the FASTQ classifier package."""
+"""Command-line interface for the mosquito classifier pipeline."""
 
 from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+
+_DEFAULT_PARALLEL_JOBS = 4
+_DEFAULT_PREDICTION_BATCH_ROWS = 64
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Create the ``fastq-classifier`` argument parser.
+def main(arguments: Sequence[str] | None = None) -> int:
+    """Run one pipeline command."""
+    argument_parser = _argument_parser()
+    parsed_args = argument_parser.parse_args(arguments)
+    try:
+        if parsed_args.command == "download":
+            from fastq_classifier.download import download_read_pairs
 
-    Returns
-    -------
-    argparse.ArgumentParser
-        Parser with package subcommands.
-    """
-    parser = argparse.ArgumentParser(prog="fastq-classifier")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+            command_artifact_path = download_read_pairs(
+                parsed_args.ena_report,
+                parsed_args.download_dir,
+                jobs=parsed_args.jobs,
+            )
+        elif parsed_args.command == "count-kmers":
+            from fastq_classifier.kmc import count_kmers
 
-    fetch = subparsers.add_parser(
-        "fetch-first-n",
-        help="Fetch first N paired FASTQ reads from an ENA run report TSV.",
+            command_artifact_path = count_kmers(
+                parsed_args.fastq_manifest,
+                parsed_args.count_dir,
+                jobs=parsed_args.jobs,
+            )
+        elif parsed_args.command == "build-matrix":
+            from fastq_classifier.matrix import build_count_matrix
+
+            command_artifact_path = build_count_matrix(
+                parsed_args.kmc_manifest,
+                parsed_args.matrix_dir,
+                jobs=parsed_args.jobs,
+            )
+        elif parsed_args.command == "assign-folds":
+            from fastq_classifier.folds import assign_development_folds
+
+            command_artifact_path = assign_development_folds(
+                parsed_args.matrix_dir,
+                parsed_args.development_samples,
+                parsed_args.fold_dir,
+            )
+        elif parsed_args.command == "train":
+            from fastq_classifier.training import train_classifier
+
+            command_artifact_path = train_classifier(
+                parsed_args.matrix_dir,
+                parsed_args.folds_path,
+                parsed_args.classifier_dir,
+            )
+        elif parsed_args.command == "predict":
+            from fastq_classifier.classifier import classify_count_matrix
+
+            command_artifact_path = classify_count_matrix(
+                parsed_args.classifier_dir,
+                parsed_args.matrix_dir,
+                parsed_args.predictions_path,
+                batch_size=parsed_args.batch_size,
+            )
+        else:
+            raise AssertionError(f"Unknown command: {parsed_args.command}")
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(command_artifact_path)
+    return 0
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    argument_parser = argparse.ArgumentParser(prog="fastq-classifier")
+    subcommands = argument_parser.add_subparsers(dest="command", required=True)
+
+    download_command = subcommands.add_parser(
+        "download",
+        help="download paired FASTQ prefixes",
     )
-    fetch.add_argument("--ena-report", required=True, type=Path)
-    fetch.add_argument("--out-dir", required=True, type=Path)
-    fetch.add_argument("--read-pairs", required=True, type=int)
-    fetch.add_argument("--jobs", default=1, type=int)
-    fetch.add_argument(
-        "--curl",
-        default="curl",
-        help="curl executable or path. Defaults to the curl found on PATH.",
-    )
-    fetch.add_argument(
-        "--seqkit",
-        default="seqkit",
-        help="SeqKit executable or path. Use this when seqkit is not on PATH.",
+    download_command.add_argument("ena_report", type=Path)
+    download_command.add_argument("download_dir", type=Path)
+    download_command.add_argument(
+        "--jobs",
+        type=_positive_cli_integer,
+        default=_DEFAULT_PARALLEL_JOBS,
     )
 
-    extract = subparsers.add_parser(
-        "extract-kmers",
-        help="Extract exact canonical k-mer counts with KMC.",
-    )
-    extract.add_argument("--fetch-results", required=True, type=Path)
-    extract.add_argument("--out-dir", required=True, type=Path)
-    extract.add_argument("--k", required=True, type=int)
-    extract.add_argument("--jobs", default=1, type=int)
-    extract.add_argument(
-        "--kmc",
-        default="kmc",
-        help="KMC executable or path. Use this when kmc is not on PATH.",
-    )
-    extract.add_argument(
-        "--memory-gb",
-        default=2,
-        type=int,
-        help="Memory limit for each KMC process. KMC requires at least 2.",
+    count_command = subcommands.add_parser("count-kmers", help="count canonical 8-mers with KMC")
+    count_command.add_argument("fastq_manifest", type=Path)
+    count_command.add_argument("count_dir", type=Path)
+    count_command.add_argument(
+        "--jobs",
+        type=_positive_cli_integer,
+        default=_DEFAULT_PARALLEL_JOBS,
     )
 
-    matrix = subparsers.add_parser(
+    matrix_command = subcommands.add_parser(
         "build-matrix",
-        help="Build a sparse k-mer matrix from KMC feature results.",
+        help="build the canonical 8-mer count matrix",
     )
-    matrix.add_argument("--feature-results", required=True, type=Path)
-    matrix.add_argument("--out-dir", required=True, type=Path)
-    matrix.add_argument("--jobs", default=1, type=int)
-    matrix.add_argument(
-        "--kmc-dump",
-        default="kmc_dump",
-        help="KMC dump executable or path. Use this when kmc_dump is not on PATH.",
+    matrix_command.add_argument("kmc_manifest", type=Path)
+    matrix_command.add_argument("matrix_dir", type=Path)
+    matrix_command.add_argument(
+        "--jobs",
+        type=_positive_cli_integer,
+        default=_DEFAULT_PARALLEL_JOBS,
     )
 
-    evaluate = subparsers.add_parser(
-        "evaluate-classifier",
-        help="Train and evaluate a sparse k-mer classifier.",
+    folds_command = subcommands.add_parser(
+        "assign-folds",
+        help="assign grouped development folds",
     )
-    evaluate.add_argument("--matrix-dir", required=True, type=Path)
-    evaluate.add_argument("--out-dir", required=True, type=Path)
-    evaluate.add_argument("--label-column", required=True)
-    evaluate.add_argument("--test-size", default=0.25, type=float)
-    evaluate.add_argument("--seed", default=1, type=int)
-    return parser
+    folds_command.add_argument("matrix_dir", type=Path)
+    folds_command.add_argument("development_samples", type=Path)
+    folds_command.add_argument("fold_dir", type=Path)
 
-
-def main(argv: list[str] | None = None) -> int:
-    """Run the command line program.
-
-    Parameters
-    ----------
-    argv : list of str or None, optional
-        Command-line arguments without the program name. When ``None``,
-        ``argparse`` reads from ``sys.argv``.
-
-    Returns
-    -------
-    int
-        ``0`` after the command finishes, or ``2`` for invalid input and fetch
-        setup errors.
-    """
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    command = cast("str", args.command)
-
-    if command == "fetch-first-n":
-        return run_fetch_command(args)
-
-    if command == "extract-kmers":
-        return run_extract_command(args)
-
-    if command == "build-matrix":
-        return run_matrix_command(args)
-
-    if command == "evaluate-classifier":
-        return run_evaluate_command(args)
-
-    sys.stderr.write(f"error: Unknown command: {command}\n")
-    return 2
-
-
-def run_fetch_command(args: argparse.Namespace) -> int:
-    """Run the ``fetch-first-n`` command.
-
-    Parameters
-    ----------
-    args : argparse.Namespace
-        Parsed command arguments.
-
-    Returns
-    -------
-    int
-        Process exit code.
-    """
-    from fastq_classifier.fetch_first_n import FetchError, fetch_first_n  # noqa: PLC0415
-    from fastq_classifier.utils import InputError  # noqa: PLC0415
-
-    ena_report = cast("Path", args.ena_report)
-    out_dir = cast("Path", args.out_dir)
-    read_pairs = cast("int", args.read_pairs)
-    jobs = cast("int", args.jobs)
-    curl = cast("str", args.curl)
-    seqkit = cast("str", args.seqkit)
-    try:
-        report = fetch_first_n(
-            ena_report,
-            out_dir,
-            read_pairs,
-            jobs=jobs,
-            curl=(curl,),
-            seqkit=(seqkit,),
-        )
-    except (FetchError, InputError) as error:
-        sys.stderr.write(f"error: {error}\n")
-        return 2
-    summary = f"downloads={len(report.downloads)} invalid={len(report.invalid_rows)}"
-    sys.stdout.write(f"{summary} out_dir={out_dir}\n")
-    return 0
-
-
-def run_extract_command(args: argparse.Namespace) -> int:
-    """Run the ``extract-kmers`` command.
-
-    Parameters
-    ----------
-    args : argparse.Namespace
-        Parsed command arguments.
-
-    Returns
-    -------
-    int
-        Process exit code.
-    """
-    from fastq_classifier.extract_features import (  # noqa: PLC0415
-        KmerExtractionError,
-        extract_kmer_features,
+    train_command = subcommands.add_parser(
+        "train",
+        help="train the five-class logistic classifier",
     )
-    from fastq_classifier.utils import InputError  # noqa: PLC0415
+    train_command.add_argument("matrix_dir", type=Path)
+    train_command.add_argument("folds_path", type=Path)
+    train_command.add_argument("classifier_dir", type=Path)
 
-    fetch_results = cast("Path", args.fetch_results)
-    out_dir = cast("Path", args.out_dir)
-    k = cast("int", args.k)
-    jobs = cast("int", args.jobs)
-    kmc = cast("str", args.kmc)
-    memory_gb = cast("int", args.memory_gb)
-    try:
-        extraction = extract_kmer_features(
-            fetch_results,
-            out_dir,
-            k,
-            jobs=jobs,
-            kmc=(kmc,),
-            memory_gb=memory_gb,
-        )
-    except (KmerExtractionError, InputError) as error:
-        sys.stderr.write(f"error: {error}\n")
-        return 2
-    summary = f"databases={len(extraction.databases)} invalid={len(extraction.invalid_rows)}"
-    sys.stdout.write(f"{summary} out_dir={out_dir}\n")
-    return 0
-
-
-def run_matrix_command(args: argparse.Namespace) -> int:
-    """Run the ``build-matrix`` command.
-
-    Parameters
-    ----------
-    args : argparse.Namespace
-        Parsed command arguments.
-
-    Returns
-    -------
-    int
-        Process exit code.
-    """
-    from fastq_classifier.build_matrix import MatrixBuildError, build_kmer_matrix  # noqa: PLC0415
-    from fastq_classifier.utils import InputError  # noqa: PLC0415
-
-    feature_results = cast("Path", args.feature_results)
-    out_dir = cast("Path", args.out_dir)
-    kmc_dump = cast("str", args.kmc_dump)
-    jobs = cast("int", args.jobs)
-    try:
-        matrix = build_kmer_matrix(
-            feature_results,
-            out_dir,
-            kmc_dump=(kmc_dump,),
-            jobs=jobs,
-        )
-    except (InputError, MatrixBuildError) as error:
-        sys.stderr.write(f"error: {error}\n")
-        return 2
-    summary = f"samples={matrix.sample_count} invalid={len(matrix.invalid_rows)}"
-    metrics = f"features={matrix.feature_count} entries={matrix.entry_count}"
-    sys.stdout.write(f"{summary} {metrics} out_dir={out_dir}\n")
-    return 0
-
-
-def run_evaluate_command(args: argparse.Namespace) -> int:
-    """Run the ``evaluate-classifier`` command.
-
-    Parameters
-    ----------
-    args : argparse.Namespace
-        Parsed command arguments.
-
-    Returns
-    -------
-    int
-        Process exit code.
-    """
-    from fastq_classifier.evaluate_classifier import (  # noqa: PLC0415
-        ClassifierError,
-        evaluate_classifier,
+    predict_command = subcommands.add_parser(
+        "predict",
+        help="predict a compatible count matrix",
     )
-    from fastq_classifier.utils import InputError  # noqa: PLC0415
+    predict_command.add_argument("classifier_dir", type=Path)
+    predict_command.add_argument("matrix_dir", type=Path)
+    predict_command.add_argument("predictions_path", type=Path)
+    predict_command.add_argument(
+        "--batch-size",
+        type=_positive_cli_integer,
+        default=_DEFAULT_PREDICTION_BATCH_ROWS,
+    )
 
-    matrix_dir = cast("Path", args.matrix_dir)
-    out_dir = cast("Path", args.out_dir)
-    label_column = cast("str", args.label_column)
-    test_size = cast("float", args.test_size)
-    seed = cast("int", args.seed)
-    try:
-        result = evaluate_classifier(
-            matrix_dir,
-            out_dir,
-            label_column,
-            test_size=test_size,
-            random_seed=seed,
-        )
-    except (InputError, ClassifierError) as error:
-        sys.stderr.write(f"error: {error}\n")
-        return 2
-    summary = f"samples={result.sample_count} features={result.feature_count}"
-    metrics = f"accuracy={result.accuracy:.6f} balanced_accuracy={result.balanced_accuracy:.6f}"
-    sys.stdout.write(f"{summary} {metrics} out_dir={out_dir}\n")
-    return 0
+    return argument_parser
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def _positive_cli_integer(text: str) -> int:
+    parsed_integer = int(text)
+    if parsed_integer <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed_integer

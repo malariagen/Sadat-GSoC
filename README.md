@@ -1,235 +1,117 @@
-# fastq-classifier
+# Building a machine-learning taxon classifier for genomic classification in malaria mosquitoes
 
-Reference-free FASTQ feature extraction and classification components.
+`fastq-classifier` assigns paired-end whole-genome sequencing reads to one of five major
+*Anopheles* groups. It works directly from FASTQ files, before read alignment and variant calling.
+The predicted group can then guide the choice of reference genome and other genomic resources.
 
-## Fetch first N paired reads
+The classifier uses five labels:
 
-The fetcher reads an ENA run report TSV. The report must include
-`run_accession` and `fastq_ftp`.
+| Label | Taxonomic interpretation |
+|---|---|
+| `gambiae_complex` | *An. gambiae*, *An. coluzzii*, and *An. arabiensis* pooled |
+| `darlingi` | *An. darlingi* |
+| `minimus` | *An. minimus* |
+| `stephensi` | *An. stephensi* |
+| `funestus` | *An. funestus* |
 
-Runtime tools:
+Species-level classification within the Gambiae complex is not supported.
 
-- `curl`, available on `PATH` or passed with `--curl`
-- `seqkit`, available on `PATH` or passed with `--seqkit`
+## Method
 
-SeqKit is an external binary, not a Python dependency. Install it from the
-[SeqKit download page](https://bioinf.shenwei.me/seqkit/download/) or with a
-package manager such as Bioconda.
+For each sequencing run, the software downloads the first 25,000 read pairs and counts all
+canonical 8-mers with KMC. The resulting 32,896 counts are converted to counts per million,
+transformed with `log1p`, and normalized to unit L2 length. A class-balanced multinomial logistic
+regression assigns the sample to one of the five groups.
 
-### CLI
+## Installation
 
-Install from the zip:
-
-```powershell
-python -m pip install fastq_classifier.zip
-```
-
-On Windows, put SeqKit in a local `tools` folder:
-
-```powershell
-mkdir tools
-curl.exe -L -o tools\seqkit.tar.gz https://github.com/shenwei356/seqkit/releases/download/v2.13.0/seqkit_windows_amd64.exe.tar.gz
-tar.exe -xzf tools\seqkit.tar.gz -C tools
-.\tools\seqkit.exe version
-```
-
-Run the fetch command and pass the SeqKit path directly:
+The software requires Python 3.11 or later and KMC 3. The `kmc` and `kmc_tools` executables must be
+available on `PATH`.
 
 ```powershell
-fastq-classifier fetch-first-n `
-  --ena-report filereport_read_run_PRJNA1169887.tsv `
-  --out-dir fetched_reads `
-  --read-pairs 25000 `
-  --jobs 4 `
-  --seqkit .\tools\seqkit.exe
+python -m pip install .
 ```
 
-Outputs are written under `fetched_reads`:
+## Prepare a count matrix
 
-- `invalid_rows.tsv`: input rows that could not be downloaded
-- `fetch_results.tsv`: completed, skipped, and failed downloads
-- `runs/<run_accession>/*.fastq.gz`: one R1 and one R2 subset per run
+The download command accepts a tab-separated ENA run report containing `run_accession` and
+`fastq_ftp` columns. Each `fastq_ftp` value must contain the read 1 and read 2 URLs, in that order,
+separated by a semicolon.
 
-### Python API
-
-```python
-from fastq_classifier import fetch_first_n
-
-report = fetch_first_n(
-    "filereport_read_run_PRJNA1169887.tsv",
-    "fetched_reads",
-    read_pairs=25_000,
-    jobs=4,
-)
-
-print(f"downloads: {len(report.downloads)}")
-print(f"invalid rows: {len(report.invalid_rows)}")
-
-for run in report.downloads:
-    print(run.run_accession, run.status, run.written_read_pairs, run.error)
+```text
+run_accession	fastq_ftp
+ERR000001	ftp.sra.ebi.ac.uk/.../ERR000001_1.fastq.gz;ftp.sra.ebi.ac.uk/.../ERR000001_2.fastq.gz
 ```
 
-`fetch_first_n` returns:
-
-- `DownloadReport.downloads`: one `DownloadedRun` for each accepted row
-- `DownloadReport.invalid_rows`: input rows that could not be used
-
-Setup errors are raised as `InputError` or `FetchError`.
-
-Result statuses:
-
-- `completed`: R1 and R2 files were downloaded and checked
-- `skipped`: both output files already existed and had matching record counts
-- `failed`: the download failed; inspect `run.error`
-
-Invalid rows are input problems, not download failures:
-
-```python
-for row in report.invalid_rows:
-    print(row.row_number, row.reason)
-```
-
-Pass explicit tool paths when `curl` or `seqkit` are not on `PATH`:
-
-```python
-report = fetch_first_n(
-    "filereport_read_run_PRJNA1169887.tsv",
-    "fetched_reads",
-    read_pairs=25_000,
-    jobs=4,
-    curl=(r"C:\Windows\System32\curl.exe",),
-    seqkit=(r"C:\tools\seqkit.exe",),
-)
-```
-
-The `curl` and `seqkit` arguments are command prefixes. They can include extra
-wrapper arguments when needed, for example `("conda", "run", "-n", "bio", "seqkit")`.
-
-## Extract exact k-mer features
-
-The feature extractor reads `fetch_results.tsv` from the fetch step and runs
-KMC on each completed or skipped paired-end FASTQ subset.
-
-Runtime tool:
-
-- `kmc`, available on `PATH` or passed with `--kmc`
-
-KMC is an external binary, not a Python dependency. Install it from the
-[KMC release page](https://github.com/refresh-bio/KMC/releases) or with a
-package manager such as Bioconda.
-
-### CLI
+Run the three preparation commands in sequence:
 
 ```powershell
-fastq-classifier extract-kmers `
-  --fetch-results fetched_reads\fetch_results.tsv `
-  --out-dir features_k13 `
-  --k 13 `
-  --jobs 4 `
-  --kmc .\tools\kmc.exe
-```
+fastq-classifier download ena_runs.tsv work\fastq --jobs 4
 
-Outputs are written under `features_k13`:
+fastq-classifier count-kmers `
+  work\fastq\fastq_manifest.tsv `
+  work\kmc `
+  --jobs 4
 
-- `invalid_rows.tsv`: fetch-result rows that could not be counted
-- `feature_results.tsv`: completed, skipped, and failed KMC runs
-- `runs/<run_accession>/*.kmc_pre` and `*.kmc_suf`: exact canonical k-mer count
-  databases
-- `runs/<run_accession>/*.stats.json`: KMC count summary
-
-### Python API
-
-```python
-from fastq_classifier import extract_kmer_features
-
-extraction = extract_kmer_features(
-    "fetched_reads/fetch_results.tsv",
-    "features_k13",
-    k=13,
-    jobs=4,
-)
-
-for database in extraction.databases:
-    unique = None if database.stats is None else database.stats.unique_kmers
-    print(database.run_accession, database.status, unique, database.error)
-```
-
-## Build a sparse feature matrix
-
-The matrix builder reads `feature_results.tsv` from the KMC extraction step and
-uses `kmc_dump` to convert each KMC database into sparse matrix entries.
-
-Runtime tool:
-
-- `kmc_dump`, available on `PATH` or passed with `--kmc-dump`
-
-### CLI
-
-```powershell
 fastq-classifier build-matrix `
-  --feature-results features_k13\feature_results.tsv `
-  --out-dir matrix_k13 `
-  --kmc-dump .\tools\kmc_dump.exe
+  work\kmc\kmc_manifest.tsv `
+  work\matrix `
+  --jobs 4
 ```
 
-Outputs are written under `matrix_k13`:
+The matrix directory contains the count matrix, the fixed k-mer vocabulary, and the run order.
 
-- `samples.tsv`: matrix rows and the original feature-result metadata
-- `features.tsv`: matrix columns and their k-mers
-- `matrix.npz`: sparse SciPy CSR count matrix
-- `invalid_rows.tsv`: feature-result rows that could not become matrix samples
+## Train the classifier
 
-### Python API
+Training requires a tab-separated file with these columns:
 
-```python
-from fastq_classifier import build_kmer_matrix
+| Column | Purpose |
+|---|---|
+| `specimen_id` | Unique specimen identifier |
+| `run_accession` | Run represented by the corresponding matrix row |
+| `label` | One of the five classifier labels |
+| `country` | Grouping field for the Gambiae complex |
+| `source` | Grouping field for Darlingi |
+| `location` | Grouping field for Minimus and Funestus |
+| `year` | Additional grouping field for Funestus |
+| `study_id` | Grouping field for Stephensi |
 
-matrix = build_kmer_matrix(
-    "features_k13/feature_results.tsv",
-    "matrix_k13",
-)
-
-print(matrix.sample_count, matrix.feature_count, matrix.entry_count)
-print(matrix.matrix_path)
-```
-
-## Evaluate a classifier
-
-The classifier reads a matrix directory from `build-matrix`. Labels are read
-from a column in `samples.tsv`. Each class needs at least two samples, and the
-train/test split must leave at least one sample from each class on both sides.
-
-### CLI
+The file must contain every column. Grouping fields that do not apply to a sample may be empty.
+Assign the grouped folds and train the classifier:
 
 ```powershell
-fastq-classifier evaluate-classifier `
-  --matrix-dir matrix_k13 `
-  --out-dir evaluation_k13 `
-  --label-column scientific_name `
-  --test-size 0.25 `
-  --seed 1
+fastq-classifier assign-folds `
+  work\matrix `
+  development_samples.tsv `
+  work\folds
+
+fastq-classifier train `
+  work\matrix `
+  work\folds\folds.tsv `
+  work\classifier
 ```
 
-Outputs are written under `evaluation_k13`:
+## Classify new samples
 
-- `metrics.tsv`: sample counts and test-set metrics
-- `predictions.tsv`: test-set labels and predictions
-- `confusion_matrix.tsv`: confusion matrix counts
-- `confusion_matrix.png`: confusion matrix plot
+Prepare a separate count matrix for the new runs, then apply the classifier directory produced by
+the training command:
 
-### Python API
-
-```python
-from fastq_classifier import (
-    evaluate_classifier,
-)
-
-evaluation = evaluate_classifier(
-    "matrix_k13",
-    "evaluation_k13",
-    "scientific_name",
-)
-
-print(evaluation.accuracy, evaluation.balanced_accuracy)
-print(evaluation.confusion_matrix_path)
+```powershell
+fastq-classifier predict `
+  work\classifier `
+  new_samples\matrix `
+  predictions.tsv
 ```
+
+`predictions.tsv` contains the run accession, the predicted label, and the probability assigned to
+each supported group. These probabilities compare only the five trained classes. The software does
+not identify samples from unsupported taxa.
+
+## Development results
+
+Across four grouped development folds containing 4,401 samples, the five-class classifier reached
+0.9746 balanced accuracy and 0.9772 macro-F1. Minimus and Funestus had no errors in these folds,
+although both had fewer samples and narrower geographic coverage than the Gambiae complex. The
+reserved five-class test set has not been evaluated.
+
+The [project report](PROJECT_REPORT.md) describes the study design, results, and limitations.
