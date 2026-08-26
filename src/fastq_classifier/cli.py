@@ -90,12 +90,12 @@ def _argument_parser() -> argparse.ArgumentParser:
     download_command.add_argument("download_dir", type=Path)
     download_command.add_argument(
         "--read-pairs",
-        type=_positive_cli_integer,
+        type=int,
         default=DEFAULT_READ_PAIRS,
     )
     download_command.add_argument(
         "--jobs",
-        type=_positive_cli_integer,
+        type=int,
         default=_DEFAULT_PARALLEL_JOBS,
     )
 
@@ -105,7 +105,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     count_command.add_argument("--k", type=int, default=DEFAULT_KMER_SIZE)
     count_command.add_argument(
         "--jobs",
-        type=_positive_cli_integer,
+        type=int,
         default=_DEFAULT_PARALLEL_JOBS,
     )
 
@@ -117,7 +117,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     matrix_command.add_argument("matrix_dir", type=Path)
     matrix_command.add_argument(
         "--jobs",
-        type=_positive_cli_integer,
+        type=int,
         default=_DEFAULT_PARALLEL_JOBS,
     )
 
@@ -146,15 +146,8 @@ def _argument_parser() -> argparse.ArgumentParser:
     predict_command.add_argument("predictions_path", type=Path)
     predict_command.add_argument(
         "--batch-size",
-        type=_positive_cli_integer,
+        type=int,
         default=_DEFAULT_PREDICTION_BATCH_ROWS,
     )
 
     return argument_parser
-
-
-def _positive_cli_integer(text: str) -> int:
-    parsed_integer = int(text)
-    if parsed_integer <= 0:
-        raise argparse.ArgumentTypeError("must be a positive integer")
-    return parsed_integer

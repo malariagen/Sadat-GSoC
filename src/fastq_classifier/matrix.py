@@ -14,7 +14,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 from fastq_classifier.features import (
-    DEFAULT_READ_PAIRS,
     MAXIMUM_KMER_SIZE,
     MINIMUM_KMER_SIZE,
     canonical_kmers,
@@ -122,7 +121,6 @@ def _read_kmc_manifest(
             "k",
             "unique_kmers",
             "total_kmers",
-            "total_reads",
             "kmc_version",
         }
         missing_columns = required_columns - set(manifest_columns)
@@ -171,13 +169,6 @@ def _read_kmc_manifest(
                 manifest_row, "unique_kmers", manifest_path, line_number
             )
             total_kmers = _manifest_integer(manifest_row, "total_kmers", manifest_path, line_number)
-            total_reads = _manifest_integer(manifest_row, "total_reads", manifest_path, line_number)
-            expected_read_count = DEFAULT_READ_PAIRS * 2
-            if total_reads != expected_read_count:
-                raise ValueError(
-                    f"KMC manifest {manifest_path}, line {line_number}: "
-                    f"expected {expected_read_count} reads"
-                )
             if unique_kmers > len(kmers) or unique_kmers > total_kmers:
                 raise ValueError(
                     f"KMC manifest {manifest_path}, line {line_number}: invalid k-mer counts"

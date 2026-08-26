@@ -15,7 +15,6 @@ from typing import cast
 
 from fastq_classifier.features import (
     DEFAULT_KMER_SIZE,
-    DEFAULT_READ_PAIRS,
     MAXIMUM_KMER_SIZE,
     MINIMUM_KMER_SIZE,
 )
@@ -56,7 +55,7 @@ def count_kmers(
     if jobs <= 0:
         raise ValueError(f"jobs must be positive, got {jobs}")
 
-    fastq_runs = _read_fastq_manifest(Path(fastq_manifest))
+    read_pairs, fastq_runs = _read_fastq_manifest(Path(fastq_manifest))
     kmc_version = _installed_kmc_version()
     count_path = Path(count_dir)
     count_path.mkdir(parents=True, exist_ok=True)
@@ -65,18 +64,26 @@ def count_kmers(
         _count_fastq_run,
         count_dir=count_path,
         k=k,
+        read_pairs=read_pairs,
         kmc_version=kmc_version,
     )
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         run_statistics = tuple(pool.map(count_one_run, fastq_runs))
 
-    return _write_kmc_manifest(count_path, fastq_runs, run_statistics, k, kmc_version)
+    return _write_kmc_manifest(
+        count_path,
+        fastq_runs,
+        run_statistics,
+        k,
+        read_pairs,
+        kmc_version,
+    )
 
 
-def _read_fastq_manifest(manifest_path: Path) -> tuple[_FastqRun, ...]:
+def _read_fastq_manifest(manifest_path: Path) -> tuple[int, tuple[_FastqRun, ...]]:
     with manifest_path.open(encoding="utf-8-sig", newline="") as manifest_stream:
         manifest_rows = csv.DictReader(manifest_stream, delimiter="\t")
-        required_columns = {"run_accession", "read1_path", "read2_path"}
+        required_columns = {"run_accession", "read1_path", "read2_path", "read_pairs"}
         missing_columns = required_columns - set(manifest_rows.fieldnames or ())
         if missing_columns:
             column_names = ", ".join(sorted(missing_columns))
@@ -84,6 +91,7 @@ def _read_fastq_manifest(manifest_path: Path) -> tuple[_FastqRun, ...]:
 
         fastq_runs: list[_FastqRun] = []
         seen_accessions: set[str] = set()
+        pair_counts: set[int] = set()
         for manifest_row in manifest_rows:
             if not any((field_value or "").strip() for field_value in manifest_row.values()):
                 continue
@@ -111,13 +119,22 @@ def _read_fastq_manifest(manifest_path: Path) -> tuple[_FastqRun, ...]:
             read2_path = _existing_fastq_path(
                 manifest_row["read2_path"], manifest_path, line_number
             )
+            try:
+                read_pairs = int((manifest_row["read_pairs"] or "").strip())
+            except ValueError as error:
+                raise ValueError(
+                    f"FASTQ manifest {manifest_path}, line {line_number}: invalid read_pairs"
+                ) from error
 
             fastq_runs.append(_FastqRun(run_accession, read1_path, read2_path))
             seen_accessions.add(run_accession)
+            pair_counts.add(read_pairs)
 
     if not fastq_runs:
         raise ValueError(f"FASTQ manifest {manifest_path} contains no runs")
-    return tuple(fastq_runs)
+    if len(pair_counts) != 1:
+        raise ValueError(f"FASTQ manifest {manifest_path} contains different read-pair counts")
+    return pair_counts.pop(), tuple(fastq_runs)
 
 
 def _existing_fastq_path(
@@ -168,20 +185,27 @@ def _count_fastq_run(
     *,
     count_dir: Path,
     k: int,
+    read_pairs: int,
     kmc_version: str,
 ) -> _KmcStatistics:
     run_dir = count_dir / fastq_run.run_accession
     if run_dir.exists():
-        return _validate_kmc_run(run_dir, fastq_run, k, kmc_version)
+        return _validate_kmc_run(run_dir, fastq_run, k, read_pairs, kmc_version)
 
     pending_run_dir = Path(tempfile.mkdtemp(prefix=f".{fastq_run.run_accession}.", dir=count_dir))
     try:
         _run_kmc(fastq_run, pending_run_dir, k)
         _write_run_metadata(
             pending_run_dir / "run.json",
-            _run_metadata(fastq_run, k, kmc_version),
+            _run_metadata(fastq_run, k, read_pairs, kmc_version),
         )
-        statistics = _validate_kmc_run(pending_run_dir, fastq_run, k, kmc_version)
+        statistics = _validate_kmc_run(
+            pending_run_dir,
+            fastq_run,
+            k,
+            read_pairs,
+            kmc_version,
+        )
         pending_run_dir.replace(run_dir)
         return statistics
     finally:
@@ -225,7 +249,12 @@ def _run_kmc(fastq_run: _FastqRun, pending_run_dir: Path, k: int) -> None:
     shutil.rmtree(kmc_scratch_dir)
 
 
-def _run_metadata(fastq_run: _FastqRun, k: int, kmc_version: str) -> dict[str, object]:
+def _run_metadata(
+    fastq_run: _FastqRun,
+    k: int,
+    read_pairs: int,
+    kmc_version: str,
+) -> dict[str, object]:
     return {
         "canonical": True,
         "counter_max": _MAXIMUM_KMER_COUNT,
@@ -233,7 +262,7 @@ def _run_metadata(fastq_run: _FastqRun, k: int, kmc_version: str) -> dict[str, o
         "kmc_version": kmc_version,
         "memory_gb": _KMC_MEMORY_GB,
         "min_count": _MINIMUM_KMER_COUNT,
-        "pairs": DEFAULT_READ_PAIRS,
+        "pairs": read_pairs,
         "read1_path": str(fastq_run.read1_path),
         "read2_path": str(fastq_run.read2_path),
         "run_accession": fastq_run.run_accession,
@@ -245,6 +274,7 @@ def _validate_kmc_run(
     run_dir: Path,
     fastq_run: _FastqRun,
     k: int,
+    read_pairs: int,
     kmc_version: str,
 ) -> _KmcStatistics:
     database_path = run_dir / fastq_run.run_accession
@@ -264,7 +294,7 @@ def _validate_kmc_run(
         raise ValueError(f"KMC database {database_path} is empty")
 
     saved_metadata = _read_kmc_json(metadata_path)
-    if saved_metadata != _run_metadata(fastq_run, k, kmc_version):
+    if saved_metadata != _run_metadata(fastq_run, k, read_pairs, kmc_version):
         raise ValueError(f"KMC directory {run_dir} was built from different inputs or settings")
 
     statistics = _read_kmc_statistics(statistics_path)
@@ -272,7 +302,7 @@ def _validate_kmc_run(
         raise ValueError(
             f"KMC statistics in {statistics_path} have more unique k-mers than total k-mers"
         )
-    expected_read_count = DEFAULT_READ_PAIRS * 2
+    expected_read_count = read_pairs * 2
     if statistics.total_reads != expected_read_count:
         raise ValueError(
             f"KMC statistics in {statistics_path} report {statistics.total_reads} reads; "
@@ -316,6 +346,7 @@ def _write_kmc_manifest(
     fastq_runs: tuple[_FastqRun, ...],
     run_statistics: tuple[_KmcStatistics, ...],
     k: int,
+    read_pairs: int,
     kmc_version: str,
 ) -> Path:
     manifest_path = count_dir / "kmc_manifest.tsv"
@@ -324,6 +355,7 @@ def _write_kmc_manifest(
         "run_accession",
         "database_path",
         "k",
+        "read_pairs",
         "unique_kmers",
         "total_kmers",
         "total_reads",
@@ -341,6 +373,7 @@ def _write_kmc_manifest(
                         fastq_run.run_accession,
                         run_dir / fastq_run.run_accession,
                         k,
+                        read_pairs,
                         statistics.unique_kmers,
                         statistics.total_kmers,
                         statistics.total_reads,

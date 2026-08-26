@@ -64,7 +64,7 @@ def download_read_pairs(
         for _ in pool.map(download_one_run, ena_runs):
             pass
 
-    return _write_fastq_manifest(download_path, ena_runs)
+    return _write_fastq_manifest(download_path, ena_runs, read_pairs)
 
 
 def _read_ena_runs(report_path: Path) -> tuple[_EnaRun, ...]:
@@ -264,13 +264,17 @@ def _read_identifier(header: bytes) -> bytes:
     return identifier[:-2] if identifier.endswith((b"/1", b"/2")) else identifier
 
 
-def _write_fastq_manifest(download_dir: Path, ena_runs: tuple[_EnaRun, ...]) -> Path:
+def _write_fastq_manifest(
+    download_dir: Path,
+    ena_runs: tuple[_EnaRun, ...],
+    read_pairs: int,
+) -> Path:
     manifest_path = download_dir / "fastq_manifest.tsv"
     pending_manifest = download_dir / ".fastq_manifest.tsv.tmp"
     try:
         with pending_manifest.open("w", encoding="utf-8", newline="") as manifest_stream:
             manifest_rows = csv.writer(manifest_stream, delimiter="\t", lineterminator="\n")
-            manifest_rows.writerow(("run_accession", "read1_path", "read2_path"))
+            manifest_rows.writerow(("run_accession", "read1_path", "read2_path", "read_pairs"))
             for ena_run in ena_runs:
                 run_dir = (download_dir / ena_run.run_accession).resolve()
                 manifest_rows.writerow(
@@ -278,6 +282,7 @@ def _write_fastq_manifest(download_dir: Path, ena_runs: tuple[_EnaRun, ...]) -> 
                         ena_run.run_accession,
                         run_dir / f"{ena_run.run_accession}_1.fastq.gz",
                         run_dir / f"{ena_run.run_accession}_2.fastq.gz",
+                        read_pairs,
                     )
                 )
         pending_manifest.replace(manifest_path)
