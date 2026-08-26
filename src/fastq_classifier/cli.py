@@ -7,6 +7,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from fastq_classifier.features import DEFAULT_KMER_SIZE
+
 _DEFAULT_PARALLEL_JOBS = 4
 _DEFAULT_PREDICTION_BATCH_ROWS = 64
 
@@ -30,6 +32,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             command_artifact_path = count_kmers(
                 parsed_args.fastq_manifest,
                 parsed_args.count_dir,
+                k=parsed_args.k,
                 jobs=parsed_args.jobs,
             )
         elif parsed_args.command == "build-matrix":
@@ -90,9 +93,10 @@ def _argument_parser() -> argparse.ArgumentParser:
         default=_DEFAULT_PARALLEL_JOBS,
     )
 
-    count_command = subcommands.add_parser("count-kmers", help="count canonical 8-mers with KMC")
+    count_command = subcommands.add_parser("count-kmers", help="count canonical k-mers with KMC")
     count_command.add_argument("fastq_manifest", type=Path)
     count_command.add_argument("count_dir", type=Path)
+    count_command.add_argument("--k", type=int, default=DEFAULT_KMER_SIZE)
     count_command.add_argument(
         "--jobs",
         type=_positive_cli_integer,

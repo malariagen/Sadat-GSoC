@@ -1,4 +1,4 @@
-"""Build the fixed canonical 8-mer count matrix."""
+"""Build a dense canonical k-mer count matrix."""
 
 from __future__ import annotations
 
@@ -14,9 +14,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 from fastq_classifier.features import (
-    CANONICAL_KMER_COUNT,
-    CANONICAL_KMERS,
+    MAXIMUM_KMER_SIZE,
+    MINIMUM_KMER_SIZE,
     READ_PAIRS_PER_RUN,
+    canonical_kmers,
 )
 
 DEFAULT_MATRIX_JOBS = 4
@@ -46,7 +47,7 @@ def build_count_matrix(
     if matrix_path.exists():
         raise FileExistsError(f"Matrix output already exists: {matrix_path}")
 
-    kmc_databases = _read_kmc_manifest(Path(kmc_manifest))
+    kmers, kmc_databases = _read_kmc_manifest(Path(kmc_manifest))
     _require_kmc_tools()
 
     matrix_path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,9 +55,9 @@ def build_count_matrix(
         tempfile.mkdtemp(prefix=f".{matrix_path.name}.", dir=matrix_path.parent)
     )
     try:
-        _write_count_matrix(pending_matrix_dir / "counts.npy", kmc_databases, jobs)
+        _write_count_matrix(pending_matrix_dir / "counts.npy", kmc_databases, kmers, jobs)
         (pending_matrix_dir / "kmers.txt").write_text(
-            "\n".join(CANONICAL_KMERS) + "\n",
+            "\n".join(kmers) + "\n",
             encoding="ascii",
         )
         _write_run_index(pending_matrix_dir / "runs.tsv", kmc_databases)
@@ -109,13 +110,16 @@ def read_matrix_run_accessions(index_path: str | Path) -> tuple[str, ...]:
     return tuple(run_accessions)
 
 
-def _read_kmc_manifest(manifest_path: Path) -> tuple[_KmcDatabase, ...]:
+def _read_kmc_manifest(
+    manifest_path: Path,
+) -> tuple[tuple[str, ...], tuple[_KmcDatabase, ...]]:
     with manifest_path.open(encoding="utf-8-sig", newline="") as manifest_stream:
         manifest_rows = csv.DictReader(manifest_stream, delimiter="\t")
         manifest_columns = tuple(manifest_rows.fieldnames or ())
         required_columns = {
             "run_accession",
             "database_path",
+            "k",
             "unique_kmers",
             "total_kmers",
             "total_reads",
@@ -129,6 +133,7 @@ def _read_kmc_manifest(manifest_path: Path) -> tuple[_KmcDatabase, ...]:
         kmc_databases: list[_KmcDatabase] = []
         seen_accessions: set[str] = set()
         kmc_versions: set[str] = set()
+        kmers: tuple[str, ...] = ()
         for manifest_row in manifest_rows:
             if not any((field_value or "").strip() for field_value in manifest_row.values()):
                 continue
@@ -150,6 +155,18 @@ def _read_kmc_manifest(manifest_path: Path) -> tuple[_KmcDatabase, ...]:
                     f"duplicate run {run_accession}"
                 )
 
+            k = _manifest_integer(manifest_row, "k", manifest_path, line_number)
+            if not MINIMUM_KMER_SIZE <= k <= MAXIMUM_KMER_SIZE:
+                raise ValueError(
+                    f"KMC manifest {manifest_path}, line {line_number}: k must be between "
+                    f"{MINIMUM_KMER_SIZE} and {MAXIMUM_KMER_SIZE}"
+                )
+            if not kmers:
+                kmers = canonical_kmers(k)
+            elif len(kmers[0]) != k:
+                raise ValueError(
+                    f"KMC manifest {manifest_path} contains databases with different k values"
+                )
             unique_kmers = _manifest_integer(
                 manifest_row, "unique_kmers", manifest_path, line_number
             )
@@ -161,7 +178,7 @@ def _read_kmc_manifest(manifest_path: Path) -> tuple[_KmcDatabase, ...]:
                     f"KMC manifest {manifest_path}, line {line_number}: "
                     f"expected {expected_read_count} reads"
                 )
-            if unique_kmers > CANONICAL_KMER_COUNT or unique_kmers > total_kmers:
+            if unique_kmers > len(kmers) or unique_kmers > total_kmers:
                 raise ValueError(
                     f"KMC manifest {manifest_path}, line {line_number}: invalid k-mer counts"
                 )
@@ -200,7 +217,7 @@ def _read_kmc_manifest(manifest_path: Path) -> tuple[_KmcDatabase, ...]:
         raise ValueError(
             f"KMC manifest {manifest_path} contains databases from different KMC versions"
         )
-    return tuple(kmc_databases)
+    return kmers, tuple(kmc_databases)
 
 
 def _manifest_integer(
@@ -252,14 +269,15 @@ def _require_kmc_tools() -> None:
 def _write_count_matrix(
     counts_path: Path,
     kmc_databases: tuple[_KmcDatabase, ...],
+    kmers: tuple[str, ...],
     jobs: int,
 ) -> None:
-    column_by_kmer = {kmer: column_index for column_index, kmer in enumerate(CANONICAL_KMERS)}
+    column_by_kmer = {kmer: column_index for column_index, kmer in enumerate(kmers)}
     count_matrix = np.lib.format.open_memmap(
         counts_path,
         mode="w+",
         dtype=np.uint32,
-        shape=(len(kmc_databases), CANONICAL_KMER_COUNT),
+        shape=(len(kmc_databases), len(kmers)),
     )
     kmc_dump_dir = counts_path.parent / "dumps"
     kmc_dump_dir.mkdir()
@@ -318,7 +336,7 @@ def _read_kmc_counts(
 ) -> NDArray[np.uint32]:
     try:
         _dump_kmc_database(kmc_database.database_path, dump_path)
-        count_row = np.zeros(CANONICAL_KMER_COUNT, dtype=np.uint32)
+        count_row = np.zeros(len(column_by_kmer), dtype=np.uint32)
         with dump_path.open(encoding="ascii", newline="") as dump_stream:
             for line_number, dump_line in enumerate(dump_stream, start=1):
                 dump_fields = dump_line.rstrip("\r\n").split("\t")
@@ -330,7 +348,7 @@ def _read_kmc_counts(
                 column_index = column_by_kmer.get(kmer)
                 if column_index is None:
                     raise ValueError(
-                        f"KMC dump {dump_path}, line {line_number}: invalid canonical 8-mer"
+                        f"KMC dump {dump_path}, line {line_number}: invalid canonical k-mer"
                     )
                 if count_row[column_index] != 0:
                     raise ValueError(
