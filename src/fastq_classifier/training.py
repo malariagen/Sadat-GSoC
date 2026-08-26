@@ -18,10 +18,9 @@ from sklearn.linear_model import LogisticRegression  # pyright: ignore[reportMis
 
 from fastq_classifier.classifier import normalize_kmer_counts
 from fastq_classifier.features import (
-    CANONICAL_KMER_COUNT,
-    CANONICAL_KMERS,
     COUNT_NORMALIZATION_METADATA,
-    KMER_FEATURE_METADATA,
+    kmer_feature_metadata,
+    read_canonical_kmers,
 )
 from fastq_classifier.folds import (
     DEVELOPMENT_FOLD_COUNT,
@@ -70,16 +69,15 @@ def train_classifier(
     run_accessions = read_matrix_run_accessions(matrix_path / "runs.tsv")
     development_folds = read_development_folds(development_folds_path, run_accessions)
     kmers_path = matrix_path / "kmers.txt"
-    if tuple(kmers_path.read_text(encoding="ascii").splitlines()) != CANONICAL_KMERS:
-        raise ValueError(f"K-mer file {kmers_path} does not contain the fixed vocabulary")
+    kmers = read_canonical_kmers(kmers_path)
     count_rows = np.load(matrix_path / "counts.npy", mmap_mode="r", allow_pickle=False)
     if count_rows.dtype != np.uint32 or count_rows.shape != (
         len(development_folds),
-        CANONICAL_KMER_COUNT,
+        len(kmers),
     ):
         raise ValueError(
             f"Count matrix {matrix_path / 'counts.npy'} must have shape "
-            f"({len(development_folds)}, {CANONICAL_KMER_COUNT}) and dtype uint32"
+            f"({len(development_folds)}, {len(kmers)}) and dtype uint32"
         )
 
     classifier_path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,6 +130,7 @@ def train_classifier(
             pending_classifier_dir,
             matrix_path,
             development_folds,
+            kmers,
             selected_c,
             fitted_classifier,
         )
@@ -347,6 +346,7 @@ def _write_classifier(
     classifier_dir: Path,
     count_matrix_dir: Path,
     development_folds: tuple[DevelopmentFold, ...],
+    kmers: tuple[str, ...],
     selected_c: float,
     classifier: _FittedLogisticRegression,
 ) -> None:
@@ -362,7 +362,7 @@ def _write_classifier(
     shutil.copyfile(kmers_path, classifier_dir / "kmers.txt")
     model_metadata = {
         "classes": list(SPECIES_LABELS),
-        "features": KMER_FEATURE_METADATA,
+        "features": kmer_feature_metadata(kmers),
         "normalization": COUNT_NORMALIZATION_METADATA,
         "classifier": {
             "family": "multiclass_logistic_regression",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 
 DEFAULT_KMER_SIZE = 8
 MINIMUM_KMER_SIZE = 4
@@ -30,11 +31,18 @@ def canonical_kmers(k: int) -> tuple[str, ...]:
     )
 
 
-CANONICAL_KMERS = canonical_kmers(DEFAULT_KMER_SIZE)
-CANONICAL_KMER_COUNT = len(CANONICAL_KMERS)
-KMER_FEATURE_METADATA: dict[str, object] = {
-    "kind": "canonical_kmer_counts",
-    "k": DEFAULT_KMER_SIZE,
-    "count": CANONICAL_KMER_COUNT,
-    "read_pairs": READ_PAIRS_PER_RUN,
-}
+def read_canonical_kmers(kmers_path: Path) -> tuple[str, ...]:
+    kmers = tuple(kmers_path.read_text(encoding="ascii").splitlines())
+    k = len(kmers[0]) if kmers else 0
+    if not MINIMUM_KMER_SIZE <= k <= MAXIMUM_KMER_SIZE or kmers != canonical_kmers(k):
+        raise ValueError(f"K-mer file {kmers_path} does not contain a supported vocabulary")
+    return kmers
+
+
+def kmer_feature_metadata(kmers: tuple[str, ...]) -> dict[str, object]:
+    return {
+        "kind": "canonical_kmer_counts",
+        "k": len(kmers[0]),
+        "count": len(kmers),
+        "read_pairs": READ_PAIRS_PER_RUN,
+    }

@@ -13,11 +13,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 from fastq_classifier.features import (
-    CANONICAL_KMER_COUNT,
-    CANONICAL_KMERS,
     COUNT_NORMALIZATION_METADATA,
     COUNTS_PER_MILLION,
-    KMER_FEATURE_METADATA,
+    kmer_feature_metadata,
+    read_canonical_kmers,
 )
 from fastq_classifier.matrix import read_matrix_run_accessions
 from fastq_classifier.species import SPECIES_LABELS
@@ -53,9 +52,12 @@ def predict_kmer_counts(
         raise ValueError(f"batch_size must be positive, got {batch_size}")
     if count_rows.dtype != np.uint32:
         raise ValueError("Counts must have dtype uint32")
-    if count_rows.ndim != 2 or count_rows.shape[1] != CANONICAL_KMER_COUNT:
-        raise ValueError(f"Counts must have {CANONICAL_KMER_COUNT} columns")
+    if count_rows.ndim != 2:
+        raise ValueError("Counts must be a two-dimensional array")
     classifier = _load_logistic_classifier(Path(classifier_dir))
+    feature_count = classifier.coefficients.shape[1]
+    if count_rows.shape[1] != feature_count:
+        raise ValueError(f"Counts must have {feature_count} columns")
     probabilities = np.empty((len(count_rows), len(SPECIES_LABELS)), dtype=np.float64)
     predicted_species: list[str] = []
     for batch_start in range(0, len(count_rows), batch_size):
@@ -91,11 +93,11 @@ def classify_count_matrix(
     count_rows = np.load(matrix_path / "counts.npy", mmap_mode="r", allow_pickle=False)
     if count_rows.dtype != np.uint32 or count_rows.shape != (
         len(run_accessions),
-        CANONICAL_KMER_COUNT,
+        classifier.coefficients.shape[1],
     ):
         raise ValueError(
             f"Count matrix {matrix_path / 'counts.npy'} must have shape "
-            f"({len(run_accessions)}, {CANONICAL_KMER_COUNT}) and dtype uint32"
+            f"({len(run_accessions)}, {classifier.coefficients.shape[1]}) and dtype uint32"
         )
 
     prediction_path.parent.mkdir(parents=True, exist_ok=True)
@@ -155,11 +157,12 @@ def _load_logistic_classifier(classifier_dir: Path) -> _LogisticClassifier:
     if species_labels != list(SPECIES_LABELS):
         raise ValueError(f"Classifier {classifier_dir} has the wrong class order")
 
-    if _model_metadata_section(model_metadata, "features", classifier_dir) != KMER_FEATURE_METADATA:
-        raise ValueError(f"Classifier {classifier_dir} has incompatible k-mer feature metadata")
     kmers_path = classifier_dir / "kmers.txt"
-    if tuple(kmers_path.read_text(encoding="ascii").splitlines()) != CANONICAL_KMERS:
-        raise ValueError(f"Classifier {classifier_dir} has an invalid k-mer vocabulary")
+    kmers = read_canonical_kmers(kmers_path)
+    if _model_metadata_section(model_metadata, "features", classifier_dir) != kmer_feature_metadata(
+        kmers
+    ):
+        raise ValueError(f"Classifier {classifier_dir} has incompatible k-mer feature metadata")
 
     if (
         _model_metadata_section(model_metadata, "normalization", classifier_dir)
@@ -174,7 +177,7 @@ def _load_logistic_classifier(classifier_dir: Path) -> _LogisticClassifier:
         intercept = np.asarray(model_archive["intercept"])
     if coefficients.dtype != np.float64 or coefficients.shape != (
         len(SPECIES_LABELS),
-        CANONICAL_KMER_COUNT,
+        len(kmers),
     ):
         raise ValueError(f"Classifier {classifier_dir} has the wrong coefficient shape")
     if intercept.dtype != np.float64 or intercept.shape != (len(SPECIES_LABELS),):
