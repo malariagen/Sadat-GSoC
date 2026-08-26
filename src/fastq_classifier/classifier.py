@@ -166,33 +166,12 @@ def _load_logistic_classifier(classifier_dir: Path) -> _LogisticClassifier:
         != COUNT_NORMALIZATION_METADATA
     ):
         raise ValueError(f"Classifier {classifier_dir} has incompatible normalization metadata")
-    classifier_metadata = _model_metadata_section(model_metadata, "classifier", classifier_dir)
-    try:
-        classifier_family = classifier_metadata["family"]
-        penalty = classifier_metadata["penalty"]
-        c_value = classifier_metadata["C"]
-    except KeyError as error:
-        raise ValueError(
-            f"Classifier {classifier_dir} is missing {error.args[0]} metadata"
-        ) from error
-    if (
-        classifier_family != "multiclass_logistic_regression"
-        or penalty != "l2"
-        or type(c_value) not in {int, float}
-        or cast(float, c_value) <= 0
-    ):
-        raise ValueError(f"Classifier {classifier_dir} is not the supported L2 logistic model")
 
-    try:
-        with np.load(classifier_dir / "model.npz", allow_pickle=False) as model_archive:
-            if set(model_archive.files) != {"coefficients", "intercept"}:
-                raise ValueError(f"Classifier {classifier_dir} has unexpected numeric arrays")
-            coefficients = np.asarray(model_archive["coefficients"])
-            intercept = np.asarray(model_archive["intercept"])
-    except (OSError, ValueError) as error:
-        raise ValueError(
-            f"Could not read classifier arrays in {classifier_dir}: {error}"
-        ) from error
+    with np.load(classifier_dir / "model.npz", allow_pickle=False) as model_archive:
+        if not {"coefficients", "intercept"} <= set(model_archive.files):
+            raise ValueError(f"Classifier {classifier_dir} is missing required numeric arrays")
+        coefficients = np.asarray(model_archive["coefficients"])
+        intercept = np.asarray(model_archive["intercept"])
     if coefficients.dtype != np.float64 or coefficients.shape != (
         len(SPECIES_LABELS),
         CANONICAL_KMER_COUNT,
@@ -236,10 +215,7 @@ def _read_model_metadata(metadata_path: Path) -> dict[str, object]:
         raise ValueError(f"Could not read classifier metadata {metadata_path}: {error}") from error
     if not isinstance(parsed_metadata, dict):
         raise ValueError(f"Classifier metadata {metadata_path} must be a JSON object")
-    metadata_fields = cast("dict[object, object]", parsed_metadata)
-    if not all(isinstance(field_name, str) for field_name in metadata_fields):
-        raise ValueError(f"Classifier metadata {metadata_path} must use string keys")
-    return cast("dict[str, object]", metadata_fields)
+    return cast("dict[str, object]", parsed_metadata)
 
 
 def _model_metadata_section(
@@ -255,7 +231,4 @@ def _model_metadata_section(
         ) from error
     if not isinstance(section_metadata, dict):
         raise ValueError(f"Classifier {classifier_dir} has invalid {section_name} metadata")
-    metadata_fields = cast("dict[object, object]", section_metadata)
-    if not all(isinstance(field_name, str) for field_name in metadata_fields):
-        raise ValueError(f"Classifier {classifier_dir} has invalid {section_name} metadata")
-    return cast("dict[str, object]", metadata_fields)
+    return cast("dict[str, object]", section_metadata)

@@ -236,9 +236,6 @@ def _validate_kmc_run(
     fastq_run: _FastqRun,
     kmc_version: str,
 ) -> _KmcStatistics:
-    if not run_dir.is_dir():
-        raise NotADirectoryError(run_dir)
-
     database_path = run_dir / fastq_run.run_accession
     prefix_path = Path(f"{database_path}.kmc_pre")
     suffix_path = Path(f"{database_path}.kmc_suf")

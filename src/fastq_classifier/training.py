@@ -39,7 +39,6 @@ CALIBRATION_BIN_COUNT = 10
 
 
 class _FittedLogisticRegression(Protocol):
-    classes_: NDArray[np.int64]
     coef_: NDArray[np.float64]
     intercept_: NDArray[np.float64]
     n_iter_: NDArray[np.int32]
@@ -207,16 +206,6 @@ def _fit_logistic_regression(
     return classifier, convergence_messages
 
 
-def _sklearn_probabilities(
-    classifier: _FittedLogisticRegression,
-    normalized_counts: NDArray[np.float32],
-) -> NDArray[np.float64]:
-    class_indices = tuple(int(class_index) for class_index in classifier.classes_)
-    if class_indices != tuple(range(len(SPECIES_LABELS))):
-        raise RuntimeError(f"Logistic regression returned unexpected classes: {class_indices}")
-    return np.asarray(classifier.predict_proba(normalized_counts), dtype=np.float64)
-
-
 def _cross_validate_c(
     normalized_counts: NDArray[np.float32],
     species_indices: NDArray[np.int64],
@@ -234,9 +223,9 @@ def _cross_validate_c(
             species_indices[training_rows],
             c_value,
         )
-        probabilities[validation_rows] = _sklearn_probabilities(
-            classifier,
-            normalized_counts[validation_rows],
+        probabilities[validation_rows] = np.asarray(
+            classifier.predict_proba(normalized_counts[validation_rows]),
+            dtype=np.float64,
         )
         convergence_messages.extend(fold_convergence_messages)
         fold_summaries.append(
@@ -363,13 +352,6 @@ def _write_classifier(
 ) -> None:
     coefficients = np.asarray(classifier.coef_, dtype=np.float64)
     intercept = np.asarray(classifier.intercept_, dtype=np.float64)
-    if coefficients.shape != (
-        len(SPECIES_LABELS),
-        CANONICAL_KMER_COUNT,
-    ) or intercept.shape != (len(SPECIES_LABELS),):
-        raise RuntimeError(
-            "Full-development logistic regression has unexpected coefficient dimensions"
-        )
     np.savez_compressed(
         classifier_dir / "model.npz",
         coefficients=coefficients,

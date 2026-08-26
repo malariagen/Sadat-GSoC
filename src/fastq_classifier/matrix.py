@@ -298,10 +298,10 @@ def _fill_count_matrix(
             for count_future in completed_futures:
                 row_number = row_by_future.pop(count_future)
                 count_matrix[row_number] = count_future.result()
-                try:
-                    next_row_number, kmc_database = next(remaining_databases)
-                except StopIteration:
+                next_database_row = next(remaining_databases, None)
+                if next_database_row is None:
                     continue
+                next_row_number, kmc_database = next_database_row
                 next_count_future = pool.submit(
                     _read_kmc_counts,
                     kmc_database,

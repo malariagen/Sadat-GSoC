@@ -185,12 +185,8 @@ def _download_fastq_once(url: str, destination_path: Path) -> None:
 @contextmanager
 def _open_fastq_response(url: str) -> Generator[BinaryIO, None, None]:
     request = Request(url, headers={"User-Agent": "fastq-classifier/0.1"})
-    fastq_response = urlopen(request, timeout=_DOWNLOAD_TIMEOUT_SECONDS)
-
-    try:
+    with urlopen(request, timeout=_DOWNLOAD_TIMEOUT_SECONDS) as fastq_response:
         yield cast(BinaryIO, fastq_response)
-    finally:
-        fastq_response.close()
 
 
 def _read_fastq_record(
@@ -228,9 +224,6 @@ def _read_fastq_record(
 
 
 def _validate_downloaded_run(run_dir: Path, run_accession: str) -> None:
-    if not run_dir.is_dir():
-        raise NotADirectoryError(run_dir)
-
     read1_path = run_dir / f"{run_accession}_1.fastq.gz"
     read2_path = run_dir / f"{run_accession}_2.fastq.gz"
     if {run_file.name for run_file in run_dir.iterdir()} != {
@@ -255,7 +248,7 @@ def _validate_read_pair(read1_path: Path, read2_path: Path) -> None:
                     raise ValueError(f"{read1_path} and {read2_path} differ at read {read_number}")
             if read1_stream.read(1) or read2_stream.read(1):
                 raise ValueError(f"FASTQ pair contains more than {READ_PAIRS_PER_RUN} reads")
-    except (EOFError, gzip.BadGzipFile, OSError) as error:
+    except (EOFError, OSError) as error:
         raise ValueError(f"Invalid FASTQ pair {read1_path}, {read2_path}: {error}") from error
 
 
