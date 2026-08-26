@@ -7,7 +7,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from fastq_classifier.features import DEFAULT_KMER_SIZE
+from fastq_classifier.features import DEFAULT_KMER_SIZE, DEFAULT_READ_PAIRS
 
 _DEFAULT_PARALLEL_JOBS = 4
 _DEFAULT_PREDICTION_BATCH_ROWS = 64
@@ -24,6 +24,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             command_artifact_path = download_read_pairs(
                 parsed_args.ena_report,
                 parsed_args.download_dir,
+                read_pairs=parsed_args.read_pairs,
                 jobs=parsed_args.jobs,
             )
         elif parsed_args.command == "count-kmers":
@@ -87,6 +88,11 @@ def _argument_parser() -> argparse.ArgumentParser:
     )
     download_command.add_argument("ena_report", type=Path)
     download_command.add_argument("download_dir", type=Path)
+    download_command.add_argument(
+        "--read-pairs",
+        type=_positive_cli_integer,
+        default=DEFAULT_READ_PAIRS,
+    )
     download_command.add_argument(
         "--jobs",
         type=_positive_cli_integer,

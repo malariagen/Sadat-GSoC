@@ -15,9 +15,9 @@ from typing import cast
 
 from fastq_classifier.features import (
     DEFAULT_KMER_SIZE,
+    DEFAULT_READ_PAIRS,
     MAXIMUM_KMER_SIZE,
     MINIMUM_KMER_SIZE,
-    READ_PAIRS_PER_RUN,
 )
 
 DEFAULT_KMC_JOBS = 4
@@ -233,7 +233,7 @@ def _run_metadata(fastq_run: _FastqRun, k: int, kmc_version: str) -> dict[str, o
         "kmc_version": kmc_version,
         "memory_gb": _KMC_MEMORY_GB,
         "min_count": _MINIMUM_KMER_COUNT,
-        "pairs": READ_PAIRS_PER_RUN,
+        "pairs": DEFAULT_READ_PAIRS,
         "read1_path": str(fastq_run.read1_path),
         "read2_path": str(fastq_run.read2_path),
         "run_accession": fastq_run.run_accession,
@@ -272,7 +272,7 @@ def _validate_kmc_run(
         raise ValueError(
             f"KMC statistics in {statistics_path} have more unique k-mers than total k-mers"
         )
-    expected_read_count = READ_PAIRS_PER_RUN * 2
+    expected_read_count = DEFAULT_READ_PAIRS * 2
     if statistics.total_reads != expected_read_count:
         raise ValueError(
             f"KMC statistics in {statistics_path} report {statistics.total_reads} reads; "

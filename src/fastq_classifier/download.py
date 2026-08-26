@@ -21,7 +21,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from fastq_classifier.features import READ_PAIRS_PER_RUN
+from fastq_classifier.features import DEFAULT_READ_PAIRS
 
 DEFAULT_DOWNLOAD_JOBS = 4
 
@@ -42,9 +42,12 @@ def download_read_pairs(
     ena_report: str | Path,
     download_dir: str | Path,
     *,
+    read_pairs: int = DEFAULT_READ_PAIRS,
     jobs: int = DEFAULT_DOWNLOAD_JOBS,
 ) -> Path:
-    """Download the first 25,000 read pairs from every run in an ENA report."""
+    """Download the requested read-pair prefix from every run in an ENA report."""
+    if read_pairs <= 0:
+        raise ValueError(f"read_pairs must be positive, got {read_pairs}")
     if jobs <= 0:
         raise ValueError(f"jobs must be positive, got {jobs}")
 
@@ -52,7 +55,11 @@ def download_read_pairs(
     download_path = Path(download_dir)
     download_path.mkdir(parents=True, exist_ok=True)
 
-    download_one_run = partial(_download_ena_run, download_dir=download_path)
+    download_one_run = partial(
+        _download_ena_run,
+        download_dir=download_path,
+        read_pairs=read_pairs,
+    )
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         for _ in pool.map(download_one_run, ena_runs):
             pass
@@ -126,28 +133,28 @@ def _ena_fastq_url(address: str, report_path: Path, line_number: int) -> str:
     return address
 
 
-def _download_ena_run(ena_run: _EnaRun, *, download_dir: Path) -> None:
+def _download_ena_run(ena_run: _EnaRun, *, download_dir: Path, read_pairs: int) -> None:
     run_dir = download_dir / ena_run.run_accession
     if run_dir.exists():
-        _validate_downloaded_run(run_dir, ena_run.run_accession)
+        _validate_downloaded_run(run_dir, ena_run.run_accession, read_pairs)
         return
 
     pending_run_dir = Path(tempfile.mkdtemp(prefix=f".{ena_run.run_accession}.", dir=download_dir))
     read1_path = pending_run_dir / f"{ena_run.run_accession}_1.fastq.gz"
     read2_path = pending_run_dir / f"{ena_run.run_accession}_2.fastq.gz"
     try:
-        _download_fastq(ena_run.read1_url, read1_path)
-        _download_fastq(ena_run.read2_url, read2_path)
-        _validate_read_pair(read1_path, read2_path)
+        _download_fastq(ena_run.read1_url, read1_path, read_pairs)
+        _download_fastq(ena_run.read2_url, read2_path, read_pairs)
+        _validate_read_pair(read1_path, read2_path, read_pairs)
         pending_run_dir.replace(run_dir)
     finally:
         shutil.rmtree(pending_run_dir, ignore_errors=True)
 
 
-def _download_fastq(url: str, destination_path: Path) -> None:
+def _download_fastq(url: str, destination_path: Path, read_pairs: int) -> None:
     for request_attempt in range(len(_RETRY_DELAYS_SECONDS) + 1):
         try:
-            _download_fastq_once(url, destination_path)
+            _download_fastq_once(url, destination_path, read_pairs)
             return
         except HTTPError as error:
             if error.code not in {408, 429} and not 500 <= error.code < 600:
@@ -164,7 +171,7 @@ def _download_fastq(url: str, destination_path: Path) -> None:
         time.sleep(_RETRY_DELAYS_SECONDS[request_attempt])
 
 
-def _download_fastq_once(url: str, destination_path: Path) -> None:
+def _download_fastq_once(url: str, destination_path: Path, read_pairs: int) -> None:
     with _open_fastq_response(url) as fastq_response:
         try:
             with (
@@ -174,7 +181,7 @@ def _download_fastq_once(url: str, destination_path: Path) -> None:
                 ) as decompressed_fastq,
                 gzip.open(destination_path, mode="wb") as compressed_fastq,
             ):
-                for read_number in range(1, READ_PAIRS_PER_RUN + 1):
+                for read_number in range(1, read_pairs + 1):
                     compressed_fastq.writelines(
                         _read_fastq_record(decompressed_fastq, url, read_number)
                     )
@@ -223,7 +230,7 @@ def _read_fastq_record(
     return fastq_record
 
 
-def _validate_downloaded_run(run_dir: Path, run_accession: str) -> None:
+def _validate_downloaded_run(run_dir: Path, run_accession: str, read_pairs: int) -> None:
     read1_path = run_dir / f"{run_accession}_1.fastq.gz"
     read2_path = run_dir / f"{run_accession}_2.fastq.gz"
     if {run_file.name for run_file in run_dir.iterdir()} != {
@@ -232,22 +239,22 @@ def _validate_downloaded_run(run_dir: Path, run_accession: str) -> None:
     }:
         raise ValueError(f"Run directory {run_dir} is incomplete or contains unexpected files")
 
-    _validate_read_pair(read1_path, read2_path)
+    _validate_read_pair(read1_path, read2_path, read_pairs)
 
 
-def _validate_read_pair(read1_path: Path, read2_path: Path) -> None:
+def _validate_read_pair(read1_path: Path, read2_path: Path, read_pairs: int) -> None:
     try:
         with (
             gzip.open(read1_path, mode="rb") as read1_stream,
             gzip.open(read2_path, mode="rb") as read2_stream,
         ):
-            for read_number in range(1, READ_PAIRS_PER_RUN + 1):
+            for read_number in range(1, read_pairs + 1):
                 read1_record = _read_fastq_record(read1_stream, str(read1_path), read_number)
                 read2_record = _read_fastq_record(read2_stream, str(read2_path), read_number)
                 if _read_identifier(read1_record[0]) != _read_identifier(read2_record[0]):
                     raise ValueError(f"{read1_path} and {read2_path} differ at read {read_number}")
             if read1_stream.read(1) or read2_stream.read(1):
-                raise ValueError(f"FASTQ pair contains more than {READ_PAIRS_PER_RUN} reads")
+                raise ValueError(f"FASTQ pair contains more than {read_pairs} reads")
     except (EOFError, OSError) as error:
         raise ValueError(f"Invalid FASTQ pair {read1_path}, {read2_path}: {error}") from error
 

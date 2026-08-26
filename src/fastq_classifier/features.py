@@ -8,7 +8,7 @@ from pathlib import Path
 DEFAULT_KMER_SIZE = 8
 MINIMUM_KMER_SIZE = 4
 MAXIMUM_KMER_SIZE = 8
-READ_PAIRS_PER_RUN = 25_000
+DEFAULT_READ_PAIRS = 25_000
 COUNTS_PER_MILLION = 1_000_000.0
 COUNT_NORMALIZATION_METADATA: dict[str, object] = {
     "counts_per_million": COUNTS_PER_MILLION,
@@ -44,5 +44,5 @@ def kmer_feature_metadata(kmers: tuple[str, ...]) -> dict[str, object]:
         "kind": "canonical_kmer_counts",
         "k": len(kmers[0]),
         "count": len(kmers),
-        "read_pairs": READ_PAIRS_PER_RUN,
+        "read_pairs": DEFAULT_READ_PAIRS,
     }
