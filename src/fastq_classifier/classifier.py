@@ -159,9 +159,9 @@ def _load_logistic_classifier(classifier_dir: Path) -> _LogisticClassifier:
 
     kmers_path = classifier_dir / "kmers.txt"
     kmers = read_canonical_kmers(kmers_path)
-    if _model_metadata_section(model_metadata, "features", classifier_dir) != kmer_feature_metadata(
-        kmers
-    ):
+    feature_metadata = _model_metadata_section(model_metadata, "features", classifier_dir)
+    read_pairs = feature_metadata.get("read_pairs")
+    if type(read_pairs) is not int or feature_metadata != kmer_feature_metadata(kmers, read_pairs):
         raise ValueError(f"Classifier {classifier_dir} has incompatible k-mer feature metadata")
 
     if (

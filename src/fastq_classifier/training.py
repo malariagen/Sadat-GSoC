@@ -27,7 +27,7 @@ from fastq_classifier.folds import (
     DevelopmentFold,
     read_development_folds,
 )
-from fastq_classifier.matrix import read_matrix_run_accessions
+from fastq_classifier.matrix import read_matrix_read_pairs, read_matrix_run_accessions
 from fastq_classifier.species import SPECIES_LABELS
 
 CANDIDATE_C_VALUES = (0.01, 0.1, 1.0, 10.0)
@@ -67,6 +67,7 @@ def train_classifier(
         raise FileExistsError(f"Training output already exists: {classifier_path}")
 
     run_accessions = read_matrix_run_accessions(matrix_path / "runs.tsv")
+    read_pairs = read_matrix_read_pairs(matrix_path)
     development_folds = read_development_folds(development_folds_path, run_accessions)
     kmers_path = matrix_path / "kmers.txt"
     kmers = read_canonical_kmers(kmers_path)
@@ -131,6 +132,7 @@ def train_classifier(
             matrix_path,
             development_folds,
             kmers,
+            read_pairs,
             selected_c,
             fitted_classifier,
         )
@@ -347,6 +349,7 @@ def _write_classifier(
     count_matrix_dir: Path,
     development_folds: tuple[DevelopmentFold, ...],
     kmers: tuple[str, ...],
+    read_pairs: int,
     selected_c: float,
     classifier: _FittedLogisticRegression,
 ) -> None:
@@ -362,7 +365,7 @@ def _write_classifier(
     shutil.copyfile(kmers_path, classifier_dir / "kmers.txt")
     model_metadata = {
         "classes": list(SPECIES_LABELS),
-        "features": kmer_feature_metadata(kmers),
+        "features": kmer_feature_metadata(kmers, read_pairs),
         "normalization": COUNT_NORMALIZATION_METADATA,
         "classifier": {
             "family": "multiclass_logistic_regression",

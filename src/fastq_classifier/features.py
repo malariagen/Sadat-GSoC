@@ -39,10 +39,10 @@ def read_canonical_kmers(kmers_path: Path) -> tuple[str, ...]:
     return kmers
 
 
-def kmer_feature_metadata(kmers: tuple[str, ...]) -> dict[str, object]:
+def kmer_feature_metadata(kmers: tuple[str, ...], read_pairs: int) -> dict[str, object]:
     return {
         "kind": "canonical_kmer_counts",
         "k": len(kmers[0]),
         "count": len(kmers),
-        "read_pairs": DEFAULT_READ_PAIRS,
+        "read_pairs": read_pairs,
     }

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import csv
+import json
 import shutil
 import subprocess
 import tempfile
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -46,7 +48,7 @@ def build_count_matrix(
     if matrix_path.exists():
         raise FileExistsError(f"Matrix output already exists: {matrix_path}")
 
-    kmers, kmc_databases = _read_kmc_manifest(Path(kmc_manifest))
+    kmers, read_pairs, kmc_databases = _read_kmc_manifest(Path(kmc_manifest))
     _require_kmc_tools()
 
     matrix_path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,6 +60,10 @@ def build_count_matrix(
         (pending_matrix_dir / "kmers.txt").write_text(
             "\n".join(kmers) + "\n",
             encoding="ascii",
+        )
+        (pending_matrix_dir / "matrix.json").write_text(
+            json.dumps({"read_pairs": read_pairs}, indent=2) + "\n",
+            encoding="utf-8",
         )
         _write_run_index(pending_matrix_dir / "runs.tsv", kmc_databases)
         pending_matrix_dir.replace(matrix_path)
@@ -109,9 +115,18 @@ def read_matrix_run_accessions(index_path: str | Path) -> tuple[str, ...]:
     return tuple(run_accessions)
 
 
+def read_matrix_read_pairs(matrix_dir: str | Path) -> int:
+    """Read the sampling depth recorded for a count matrix."""
+    matrix_metadata = cast(
+        "dict[str, int]",
+        json.loads((Path(matrix_dir) / "matrix.json").read_text(encoding="utf-8")),
+    )
+    return matrix_metadata["read_pairs"]
+
+
 def _read_kmc_manifest(
     manifest_path: Path,
-) -> tuple[tuple[str, ...], tuple[_KmcDatabase, ...]]:
+) -> tuple[tuple[str, ...], int, tuple[_KmcDatabase, ...]]:
     with manifest_path.open(encoding="utf-8-sig", newline="") as manifest_stream:
         manifest_rows = csv.DictReader(manifest_stream, delimiter="\t")
         manifest_columns = tuple(manifest_rows.fieldnames or ())
@@ -119,6 +134,7 @@ def _read_kmc_manifest(
             "run_accession",
             "database_path",
             "k",
+            "read_pairs",
             "unique_kmers",
             "total_kmers",
             "kmc_version",
@@ -131,6 +147,7 @@ def _read_kmc_manifest(
         kmc_databases: list[_KmcDatabase] = []
         seen_accessions: set[str] = set()
         kmc_versions: set[str] = set()
+        read_pair_counts: set[int] = set()
         kmers: tuple[str, ...] = ()
         for manifest_row in manifest_rows:
             if not any((field_value or "").strip() for field_value in manifest_row.values()):
@@ -165,6 +182,7 @@ def _read_kmc_manifest(
                 raise ValueError(
                     f"KMC manifest {manifest_path} contains databases with different k values"
                 )
+            read_pairs = _manifest_integer(manifest_row, "read_pairs", manifest_path, line_number)
             unique_kmers = _manifest_integer(
                 manifest_row, "unique_kmers", manifest_path, line_number
             )
@@ -201,6 +219,7 @@ def _read_kmc_manifest(
             )
             seen_accessions.add(run_accession)
             kmc_versions.add(kmc_version)
+            read_pair_counts.add(read_pairs)
 
     if not kmc_databases:
         raise ValueError(f"KMC manifest {manifest_path} contains no runs")
@@ -208,7 +227,9 @@ def _read_kmc_manifest(
         raise ValueError(
             f"KMC manifest {manifest_path} contains databases from different KMC versions"
         )
-    return kmers, tuple(kmc_databases)
+    if len(read_pair_counts) != 1:
+        raise ValueError(f"KMC manifest {manifest_path} contains different read-pair counts")
+    return kmers, read_pair_counts.pop(), tuple(kmc_databases)
 
 
 def _manifest_integer(
@@ -218,16 +239,11 @@ def _manifest_integer(
     line_number: int,
 ) -> int:
     try:
-        parsed_value = int((manifest_row[column_name] or "").strip())
+        return int((manifest_row[column_name] or "").strip())
     except ValueError as error:
         raise ValueError(
             f"KMC manifest {manifest_path}, line {line_number}: invalid {column_name} value"
         ) from error
-    if parsed_value < 0:
-        raise ValueError(
-            f"KMC manifest {manifest_path}, line {line_number}: {column_name} must not be negative"
-        )
-    return parsed_value
 
 
 def _require_kmc_tools() -> None:
