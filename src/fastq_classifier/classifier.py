@@ -18,7 +18,7 @@ from fastq_classifier.features import (
     kmer_feature_metadata,
     read_canonical_kmers,
 )
-from fastq_classifier.matrix import read_matrix_run_accessions
+from fastq_classifier.matrix import read_matrix_read_pairs, read_matrix_run_accessions
 from fastq_classifier.species import SPECIES_LABELS
 
 DEFAULT_PREDICTION_BATCH_ROWS = 64
@@ -28,6 +28,7 @@ DEFAULT_PREDICTION_BATCH_ROWS = 64
 class _LogisticClassifier:
     coefficients: NDArray[np.float64]
     intercept: NDArray[np.float64]
+    read_pairs: int
 
 
 def normalize_kmer_counts(count_rows: NDArray[np.uint32]) -> NDArray[np.float32]:
@@ -87,6 +88,8 @@ def classify_count_matrix(
         raise FileExistsError(f"Prediction output already exists: {prediction_path}")
 
     classifier = _load_logistic_classifier(classifier_path)
+    if classifier.read_pairs != read_matrix_read_pairs(matrix_path):
+        raise ValueError("Model and count matrix use different read-pair counts")
     if (classifier_path / "kmers.txt").read_bytes() != (matrix_path / "kmers.txt").read_bytes():
         raise ValueError("Model and count matrix use different k-mer vocabularies")
     run_accessions = read_matrix_run_accessions(matrix_path / "runs.tsv")
@@ -184,7 +187,7 @@ def _load_logistic_classifier(classifier_dir: Path) -> _LogisticClassifier:
         raise ValueError(f"Classifier {classifier_dir} has the wrong intercept shape")
     if not np.all(np.isfinite(coefficients)) or not np.all(np.isfinite(intercept)):
         raise ValueError(f"Classifier {classifier_dir} contains non-finite values")
-    return _LogisticClassifier(coefficients, intercept)
+    return _LogisticClassifier(coefficients, intercept, read_pairs)
 
 
 def _softmax_probabilities(
