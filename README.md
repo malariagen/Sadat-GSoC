@@ -367,9 +367,6 @@ balanced accuracy and 0.9772 macro-F1. The `minimus` and `funestus` samples were
 correctly in these folds, although both groups had fewer samples and narrower geographic coverage
 than the Gambiae complex.
 
-The reported scores come from grouped cross-validation on the development data. The reserved
-five-class test set remains unevaluated, and the experiment did not cover unsupported taxa,
-contaminated or low-quality libraries, or sequencing protocols absent from the development data.
 
 The [project report](PROJECT_REPORT.md) describes the study design, development results, and
 limitations.
