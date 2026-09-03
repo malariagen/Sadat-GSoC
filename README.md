@@ -1,10 +1,11 @@
 # fastq-classifier
 
-`fastq-classifier` assigns paired-end whole-genome sequencing reads to one of five major
-*Anopheles* groups from a short FASTQ prefix, before read alignment or variant calling. The
-predicted group can guide the choice of reference genome for later analysis.
+`fastq-classifier` uses a fixed number of read pairs from the beginning of the two FASTQ files for a
+paired-end whole-genome sequencing sample. The k-mer counts from these read pairs are used to
+classify the sample as one of five *Anopheles* groups before read alignment or variant calling, and
+the predicted group can then guide the choice of reference genome for alignment.
 
-The model uses five labels:
+For every sample, the classifier reports one of the following five labels:
 
 | Label | Taxonomic group |
 |---|---|
@@ -14,30 +15,43 @@ The model uses five labels:
 | `stephensi` | *An. stephensi* |
 | `funestus` | *An. funestus* |
 
-The classifier treats *An. gambiae*, *An. coluzzii*, and *An. arabiensis* as a single class. Samples
-from other taxa also receive one of the five labels because there is no rejection class.
+`gambiae_complex` contains *An. gambiae*, *An. coluzzii*, and *An. arabiensis*, which were pooled
+when the classifier was trained and are therefore not reported separately. The classifier has no
+rejection class for samples from other taxa; their k-mer counts are still evaluated against the five
+classes and the label with the highest probability is returned.
 
 ## Pipeline overview
 
 There are three components in the pipeline:
 
-1. Dataset preparation (`download`, `count-kmers`, and `build-matrix`) produces the count matrix
-   used for training and prediction. With an ENA run report, `download` retrieves the requested read
-   pairs and writes a FASTQ manifest. If the paired FASTQ files are already on disk, write the
-   manifest yourself and begin with `count-kmers`. `count-kmers` creates one KMC database per run,
-   and `build-matrix` combines the databases into a directory containing the count matrix, k-mer
-   vocabulary, run order, and read-pair count.
+1. Dataset preparation uses `download`, `count-kmers`, and `build-matrix` to build the count matrix
+   required for training or prediction. When the reads are obtained from ENA, `download` reads the
+   ENA run report and downloads the requested number of read pairs for each sequencing run; the
+   FASTQ paths and read-pair count are then recorded in `fastq_manifest.tsv`. If the paired FASTQ
+   files are already available locally, the same manifest can be prepared directly with
+   `run_accession`, `read1_path`, `read2_path`, and `read_pairs`. `count-kmers` runs KMC on the two
+   FASTQ files for each sequencing run and records the KMC database path in `kmc_manifest.tsv`. The
+   databases listed in `kmc_manifest.tsv` are used by `build-matrix` to write `counts.npy`,
+   `kmers.txt`, `runs.tsv`, and `matrix.json`.
 
-2. Classifier training (`assign-folds` and `train`) fits a classifier from labeled development
-   samples. `assign-folds` uses the sample metadata to keep related samples in the same fold.
-   `train` evaluates the candidate values of `C`, fits the selected model on all development
-   samples, and writes the model, out-of-fold predictions, and development metrics to a classifier
-   directory.
+2. Classifier training uses `assign-folds` and `train`. Before the classifier is fitted,
+   `assign-folds` divides the development samples into four folds, using `country` for
+   `gambiae_complex`, `source` for `darlingi`, `location` for `minimus`, `location` and `year` for
+   `funestus`, and `study_id` for `stephensi`. All samples belonging to one blocking group are kept
+   in the same fold, which avoids using that blocking group for both fitting and validation in the
+   same cross-validation split. `train` fits one class-balanced multinomial logistic regression for
+   each candidate value of `C` and each held-out fold. After `C` has been selected, `train` fits the
+   classifier again on all development samples and writes `model.npz`, `model.json`, `kmers.txt`,
+   `development_metrics.json`, `oof_predictions.tsv`, and `domain_metrics.tsv`.
 
-3. Prediction (`predict`) applies a fitted classifier to new samples. Prepare the new samples as a
-   count matrix using the same number of read pairs and the same k-mer vocabulary used for
-   training. `predict` writes the run accession, predicted label, and five class probabilities to a
-   TSV file.
+3. `predict` uses a fitted classifier to assign one of the five labels to each row of a count matrix.
+   The read-pair count for the classifier is recorded in `model.json`, while the read-pair count for
+   the matrix is recorded in `matrix.json`, and the canonical k-mer vocabulary is given by
+   `kmers.txt` in the two directories. The read-pair count and k-mer vocabulary of the matrix are
+   compared with those of the classifier before classification, and `predict` stops if either is
+   different. Otherwise, the count rows are normalized and classified in batches, and the output
+   TSV gives `row_index`, `run_accession`, `predicted_label`, and the probability for each of the five
+   labels.
 
 ## Method
 
