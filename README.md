@@ -70,33 +70,35 @@ normalization is applied to a count matrix during prediction.
 
 ## Installation
 
-The package requires Python 3.11 or later and KMC 3, with both `kmc` and `kmc_tools` available on
-`PATH`.
+`fastq-classifier` requires Python 3.11 or later. K-mer counting and count-matrix construction use
+KMC 3, so the `kmc` and `kmc_tools` programs must both be available on `PATH`.
 
-Install the package from the repository root:
+From the repository root, install the package with:
 
 ```console
 python -m pip install .
 ```
 
-The command installs the `fastq-classifier` program and the `fastq_classifier` Python package.
+After installation, run `fastq-classifier` from the command line or import the Python API from
+`fastq_classifier`.
 
 ## Pipeline stages
 
 ### 1. Download paired FASTQ prefixes
 
-To download reads, provide a tab-separated ENA run report with `run_accession` and `fastq_ftp`
-columns. Each `fastq_ftp` value must contain two `.fastq.gz` URLs separated by a semicolon, with
-read 1 first and read 2 second.
+`download` reads a tab-separated ENA run report containing the `run_accession` and `fastq_ftp`
+columns. For each sequencing run, `fastq_ftp` must contain two `.fastq.gz` URLs separated by a
+semicolon, with the read 1 URL first and the read 2 URL second.
 
 ```text
 run_accession	fastq_ftp
 ERR000001	ftp.sra.ebi.ac.uk/.../ERR000001_1.fastq.gz;ftp.sra.ebi.ac.uk/.../ERR000001_2.fastq.gz
 ```
 
-By default, `download` saves the first 25,000 read pairs from each run and works on four runs at a
-time. Before writing the compressed FASTQ files, it checks the record structure and confirms that
-the read identifiers agree between mates.
+By default, `download` takes the first 25,000 read pairs from each sequencing run, and four runs are
+downloaded in parallel. During the download, each FASTQ record is checked before it is written to
+the compressed FASTQ file. The two compressed FASTQ files are then read together, and for every
+read pair the read identifier from read 1 is compared with the read identifier from read 2.
 
 #### CLI
 
@@ -117,7 +119,8 @@ fastq_manifest = download_read_pairs(
 )
 ```
 
-The output directory looks like this:
+For each sequencing run, `download` places the two compressed FASTQ files in a directory named after
+the run accession, while `fastq_manifest.tsv` is written in the download directory:
 
 ```text
 work/fastq/
@@ -127,7 +130,8 @@ work/fastq/
     ERR000001_2.fastq.gz
 ```
 
-`fastq_manifest.tsv` contains one row per run:
+For each run, `fastq_manifest.tsv` records the run accession, the absolute path of each FASTQ file,
+and the number of read pairs:
 
 | Column | Contents |
 |---|---|
@@ -166,7 +170,8 @@ kmc_manifest = count_kmers(
 )
 ```
 
-Each run has its own KMC database and two metadata files:
+`count-kmers` creates one directory for each sequencing run, in which the KMC database is stored
+together with `run.json` and `stats.json`:
 
 ```text
 work/kmc/
@@ -178,15 +183,19 @@ work/kmc/
     stats.json
 ```
 
-`run.json` records the FASTQ paths, k-mer length, read-pair count, KMC version, and KMC settings.
-`stats.json` contains the count summary reported by KMC. `kmc_manifest.tsv` keeps the run order from
-the FASTQ manifest and gives the database path and count statistics for each run.
+`run.json` records the FASTQ paths, k-mer length, read-pair count, KMC version, and the settings used
+to create the database. The count summary returned by KMC is stored in `stats.json`. After all runs
+have been counted, their database paths and count statistics are written to `kmc_manifest.tsv` in
+the same order as in `fastq_manifest.tsv`.
 
 ### 3. Build a count matrix
 
-`build-matrix` converts each database in `kmc_manifest.tsv` into one row of a dense `uint32` NumPy
-array. The array is stored in `.npy` format and can be memory-mapped instead of loaded in full. All
-databases in the manifest must have the same k-mer length, read-pair count, and KMC version.
+`build-matrix` reads the KMC databases in the order listed in `kmc_manifest.tsv`, and for every
+database the k-mer counts from that sequencing run are written to one row of a dense `uint32` NumPy
+array. The array is stored in `.npy` format, so it can be memory-mapped without loading the complete
+array into memory.
+Before the matrix is built, the k-mer length, read-pair count, and KMC version must be the same for
+every database in the manifest.
 
 #### CLI
 
@@ -225,8 +234,10 @@ work/matrix/
 
 ### 4. Assign development folds
 
-`assign-folds` prepares the grouped cross-validation folds used for classifier training. If you
-already have a fitted classifier, build a count matrix for the new samples and skip to stage 6.
+When a classifier is being trained, `assign-folds` divides the development samples into four grouped
+folds, and these folds are used by `train` when the candidate values of `C` are evaluated. Fold
+assignment is not required when a fitted classifier is used for prediction. In that case, the new
+samples are prepared as a count matrix and passed to `predict` in stage 6.
 
 `assign-folds` takes a count-matrix directory and a tab-separated development-sample table with
 the following columns:
@@ -242,12 +253,17 @@ the following columns:
 | `year` | Additional grouping field for `funestus` |
 | `study_id` | Grouping field for `stephensi` |
 
-All columns are required, but only the grouping fields used for a sample's label need values; the
-remaining grouping fields may be empty. Use a development-only table without a `split` column.
+All columns shown in the table must be present, and every row must have `specimen_id`,
+`run_accession`, and `label`. Among the grouping fields, only the field or fields used for that row's
+label require values; the grouping fields for the other labels may be left empty. The table must
+contain development samples only and must not include a `split` column.
 
-`assign-folds` matches the table to the matrix by run accession, keeps each blocking group in one
-fold, and balances the number of samples per label across the folds. Each label needs at least four
-distinct blocking groups to populate all four folds.
+`assign-folds` first matches the development-sample table to the count matrix by run accession.
+Samples from the same blocking group remain in one fold, which prevents a blocking group from being
+used for both fitting and validation in the same cross-validation split. For each label, the larger
+blocking groups are assigned first, and each group is placed in the fold that currently has the
+fewest samples of that label. At least four distinct blocking groups are required for every label,
+because each of the four folds must contain that label.
 
 #### CLI
 
@@ -267,17 +283,21 @@ folds_path = assign_development_folds(
 )
 ```
 
-`folds.tsv` follows the matrix row order and records the specimen, label, blocking group, and
-assigned fold for each row.
+`folds.tsv` follows the matrix row order and records `row_index`, `specimen_id`, `run_accession`,
+`label`, `blocking_group`, and the assigned `fold` for each row.
 
 ### 5. Train the classifier
 
-Training uses the count-matrix directory together with `folds.tsv`, which must have one entry for
-every development matrix row in the same order.
+`train` reads the count-matrix directory together with `folds.tsv`. Each count-matrix row must have
+one row in `folds.tsv` with the same `row_index` and `run_accession`, and the fold rows must appear in
+the matrix order.
 
-`train` fits grouped out-of-fold models for `C` values of 0.01, 0.1, 1, and 10. It selects the value
-with the highest balanced accuracy, using higher macro-F1, lower log loss, and then the smaller
-value of `C` to break ties. The selected model is then refitted using all development rows.
+`train` evaluates `C` values of 0.01, 0.1, 1, and 10. For each value of `C`, a class-balanced
+multinomial logistic regression is fitted on three folds and used to predict the fourth; this is
+repeated until each fold has been held out once. Balanced accuracy is calculated from the combined
+out-of-fold predictions and is used to select `C`. If balanced accuracy is equal, higher macro-F1 is
+preferred, followed by lower log loss and then the smaller value of `C`. The selected value of `C`
+is then used to fit one classifier on all development rows.
 
 #### CLI
 
@@ -320,8 +340,10 @@ work/classifier/
 
 ### 6. Classify a count matrix
 
-`predict` reads a fitted classifier directory and a count-matrix directory. It checks the matrix
-against the read-pair count and k-mer vocabulary stored with the model before classifying any rows.
+`predict` reads the fitted classifier and count-matrix directories. Before it classifies the count
+rows, the read-pair count in `matrix.json` is compared with the read-pair count in `model.json`, and
+the `kmers.txt` files from the two directories are also compared. If the read-pair count or k-mer
+vocabulary differs, prediction stops without writing any rows.
 
 #### CLI
 
@@ -342,16 +364,17 @@ predictions_path = classify_count_matrix(
 )
 ```
 
-`--batch-size` sets the number of matrix rows processed at once and defaults to 64. `predict` writes
-`row_index`, `run_accession`, `predicted_label`, and one probability for each label to the output
-TSV. The five probabilities in each row sum to one even when a sample belongs to another taxon,
+`predict` reads 64 count-matrix rows at a time by default, although another batch size can be set
+with `--batch-size`. For each row, the output TSV records `row_index`, `run_accession`,
+`predicted_label`, and the probability assigned to each of the five labels. These five probabilities
+sum to one. A sample from another taxon still receives probabilities for the five classifier labels,
 because the classifier has no rejection class.
 
 ## Classify an in-memory count array
 
-If the k-mer counts are already in memory, pass them to `predict_kmer_counts` as a two-dimensional
-`uint32` array. Each row represents one sample, and the columns must follow the vocabulary in the
-classifier's `kmers.txt`:
+If you already have the k-mer counts in a NumPy array, pass the array to `predict_kmer_counts`. The
+array must be two-dimensional and have dtype `uint32`, with one sample in each row and the columns
+in the order given by the classifier's `kmers.txt`:
 
 ```python
 from fastq_classifier import predict_kmer_counts
@@ -363,15 +386,19 @@ labels, probabilities = predict_kmer_counts(
 )
 ```
 
-The function returns one label per input row and a `float64` probability array whose columns follow
-the class order in `model.json`. When preparing `count_rows`, use the `features.read_pairs` value
-from the same file to match the sampling depth used for training.
+`predict_kmer_counts` returns one label for each input row and a `float64` array containing the five
+probabilities, and the columns in this array follow the order of `classes` in `model.json`. When
+generating `count_rows`, use the number of read pairs recorded as `features.read_pairs` in
+`model.json` for every sample.
 
 ## Reuse existing output
 
-`download` and `count-kmers` can resume in an existing output directory. Before reusing a completed
-run, each command checks its files and settings. If the saved run was created from different inputs
-or settings, use a new output directory.
+`download` and `count-kmers` can be run again with an existing output directory. A downloaded FASTQ
+pair is reused after the two FASTQ files and their read-pair count have been checked. Before a KMC
+database is reused, `count-kmers` checks the database files and statistics and compares `run.json`
+with the current FASTQ paths, k-mer length, read-pair count, KMC version, and KMC command settings.
+If a completed run does not match, the command stops; use a new output directory for changed FASTQ
+files or settings.
 
 `assign-folds` replaces `folds.tsv` in its output directory. `build-matrix` and `train` require new
 output directories, and `predict` requires a new output file.
