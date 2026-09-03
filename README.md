@@ -56,15 +56,17 @@ There are three components in the pipeline:
 ## Method
 
 By default, `download` takes the first 25,000 read pairs from each sequencing run, and `count-kmers`
-counts canonical 8-mers. A k-mer and its reverse complement are treated as the same feature, giving
-32,896 features when `k=8`. Use `download --read-pairs` to change the sampling depth; for local
-FASTQ files, record the chosen value in the manifest. `count-kmers --k` accepts k-mer lengths from
-4 to 8.
+counts canonical 8-mers in these reads. A k-mer and its reverse complement are represented by the
+same feature, which gives 32,896 features when `k=8`. The number of read pairs can be changed with
+`download --read-pairs`; for FASTQ files supplied locally, this number is entered in the `read_pairs`
+column of `fastq_manifest.tsv`. For the k-mer length, `count-kmers --k` accepts values from 4 to 8.
 
-Before training, the pipeline converts the counts to counts per million, applies `log1p`, and
-normalizes each sample to unit L2 length. Training selects the value of `C` across four grouped
-development folds and fits a class-balanced multinomial logistic regression. For prediction, keep
-the read-pair count and k-mer vocabulary the same as in training.
+Before the classifier is fitted, the k-mer counts for each sample are converted to counts per
+million, transformed with `log1p`, and normalized to unit L2 length. For each candidate value of
+`C`, a class-balanced multinomial logistic regression is fitted on three of the grouped development
+folds and evaluated on the remaining fold, with each fold used once for validation. After `C` has
+been selected from these results, one classifier is fitted on all development samples. The same
+normalization is applied to a count matrix during prediction.
 
 ## Installation
 
